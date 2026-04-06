@@ -1,0 +1,30 @@
+﻿  pdu_mdi2.c
+c:\users\magus\documents\visual studio 2015\projects\pdu_mdi2\pdu_mdi2\pdu_mdi2.c(34): warning C4996: 'fopen': This function or variable may be unsafe. Consider using fopen_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
+  c:\program files (x86)\windows kits\10\include\10.0.10240.0\ucrt\stdio.h(205): note: see declaration of 'fopen'
+c:\users\magus\documents\visual studio 2015\projects\pdu_mdi2\pdu_mdi2\pdu_mdi2.c(595): warning C4996: 'strncpy': This function or variable may be unsafe. Consider using strncpy_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
+  c:\program files (x86)\windows kits\10\include\10.0.10240.0\ucrt\string.h(346): note: see declaration of 'strncpy'
+c:\users\magus\documents\visual studio 2015\projects\pdu_mdi2\pdu_mdi2\pdu_mdi2.c(597): warning C4996: 'strcpy': This function or variable may be unsafe. Consider using strcpy_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
+  c:\program files (x86)\windows kits\10\include\10.0.10240.0\ucrt\string.h(119): note: see declaration of 'strcpy'
+c:\users\magus\documents\visual studio 2015\projects\pdu_mdi2\pdu_mdi2\pdu_mdi2.c(741): warning C4996: 'strncpy': This function or variable may be unsafe. Consider using strncpy_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
+  c:\program files (x86)\windows kits\10\include\10.0.10240.0\ucrt\string.h(346): note: see declaration of 'strncpy'
+c:\users\magus\documents\visual studio 2015\projects\pdu_mdi2\pdu_mdi2\pdu_mdi2.c(743): warning C4996: 'strncpy': This function or variable may be unsafe. Consider using strncpy_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
+  c:\program files (x86)\windows kits\10\include\10.0.10240.0\ucrt\string.h(346): note: see declaration of 'strncpy'
+c:\users\magus\documents\visual studio 2015\projects\pdu_mdi2\pdu_mdi2\pdu_mdi2.c(763): warning C4996: 'strncpy': This function or variable may be unsafe. Consider using strncpy_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
+  c:\program files (x86)\windows kits\10\include\10.0.10240.0\ucrt\string.h(346): note: see declaration of 'strncpy'
+c:\users\magus\documents\visual studio 2015\projects\pdu_mdi2\pdu_mdi2\pdu_mdi2.c(766): warning C4996: 'strncpy': This function or variable may be unsafe. Consider using strncpy_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
+  c:\program files (x86)\windows kits\10\include\10.0.10240.0\ucrt\string.h(346): note: see declaration of 'strncpy'
+c:\users\magus\documents\visual studio 2015\projects\pdu_mdi2\pdu_mdi2\pdu_mdi2.c(769): warning C4996: 'strncpy': This function or variable may be unsafe. Consider using strncpy_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
+  c:\program files (x86)\windows kits\10\include\10.0.10240.0\ucrt\string.h(346): note: see declaration of 'strncpy'
+c:\users\magus\documents\visual studio 2015\projects\pdu_mdi2\pdu_mdi2\pdu_mdi2.c(772): warning C4996: 'strncpy': This function or variable may be unsafe. Consider using strncpy_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
+  c:\program files (x86)\windows kits\10\include\10.0.10240.0\ucrt\string.h(346): note: see declaration of 'strncpy'
+c:\users\magus\documents\visual studio 2015\projects\pdu_mdi2\pdu_mdi2\pdu_mdi2.c(775): warning C4996: 'strncpy': This function or variable may be unsafe. Consider using strncpy_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
+  c:\program files (x86)\windows kits\10\include\10.0.10240.0\ucrt\string.h(346): note: see declaration of 'strncpy'
+c:\users\magus\documents\visual studio 2015\projects\pdu_mdi2\pdu_mdi2\pdu_mdi2.c(801): warning C4996: 'strncpy': This function or variable may be unsafe. Consider using strncpy_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
+  c:\program files (x86)\windows kits\10\include\10.0.10240.0\ucrt\string.h(346): note: see declaration of 'strncpy'
+c:\users\magus\documents\visual studio 2015\projects\pdu_mdi2\pdu_mdi2\pdu_mdi2.c(804): warning C4996: 'strncpy': This function or variable may be unsafe. Consider using strncpy_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
+  c:\program files (x86)\windows kits\10\include\10.0.10240.0\ucrt\string.h(346): note: see declaration of 'strncpy'
+Source.def : warning LNK4104: export of symbol 'DllRegisterServer' should be PRIVATE
+Source.def : warning LNK4104: export of symbol 'DllUnregisterServer' should be PRIVATE
+     Creating library C:\Users\magus\documents\visual studio 2015\Projects\pdu_mdi2\Debug\pdu_mdi2.lib and object C:\Users\magus\documents\visual studio 2015\Projects\pdu_mdi2\Debug\pdu_mdi2.exp
+  pdu_mdi2.vcxproj -> C:\Users\magus\documents\visual studio 2015\Projects\pdu_mdi2\Debug\pdu_mdi2.dll
+  pdu_mdi2.vcxproj -> C:\Users\magus\documents\visual studio 2015\Projects\pdu_mdi2\Debug\pdu_mdi2.pdb (Full PDB)

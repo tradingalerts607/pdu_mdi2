@@ -1,0 +1,48 @@
+LIBRARY "pdu_mdi2"
+EXPORTS
+    ; PDU core
+    PDUConstruct
+    PDUDestruct
+    PDUGetModuleIds
+    PDUGetResourceIds
+    PDUGetObjectId
+    PDUGetObjectIds
+    PDUGetVersion
+    PDUGetStatus
+    PDUCreateComLogicalLink
+    PDUConnect
+    PDUDisconnect
+    PDUStartComPrimitive
+    PDUGetEventItem
+    PDUDestroyItem
+	PDUDestroyItems
+    PDUDestroyComLogicalLink
+    PDUModuleConnect
+    PDUModuleDisconnect
+    PDULockResource
+    PDUUnlockResource
+    PDUGetUniqueRespIdTable
+    PDUSetUniqueRespIdTable
+    PDUGetResourceStatus
+    PDUGetTimestamp
+    PDUIoCtl
+    PDUGetLastError
+    PDUGetEventItems
+    PDUCancelComPrimitive
+    PDUSetComParam
+    PDUGetComParam
+    PDUGetConflictingResources
+    PDURegisterEventCallback
+
+    ; VCI surface (stubs)
+    VCIAPIDestruct
+    VCIConnect
+    VCIConnectIP
+    VCIDisconnect
+    VCIGetA2D
+    VCIGetLED
+    VCIRegisterEventCallback
+    VCISetLogServer
+    VCIStopLogging
+	DllRegisterServer
+	DllUnregisterServer
