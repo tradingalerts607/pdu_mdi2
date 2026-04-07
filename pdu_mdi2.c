@@ -624,6 +624,7 @@ static int            g_ModuleEvtQInit = 0;
 * Per-connection state
 * ====================================================================== */
 #define MAX_CONNECTIONS  8
+
 typedef struct {
 	int           InUse;
 	T_PDU_UINT32  ResourceId;
@@ -640,6 +641,9 @@ typedef struct {
 	volatile int  RxThreadRun;
 
 	T_PDU_UINT32  CllState;
+
+	CRITICAL_SECTION  uridLock;          // ADD — protects URID table writes
+
 	PDU_UNIQUE_RESP_ID_TABLE_ITEM *pWorkingURID;
 	VPW_URID_TABLE ActiveURID;
 	PDU_IO_FILTER_LIST *pActiveFilters;
@@ -647,11 +651,10 @@ typedef struct {
 	int           PrimitiveActive;
 	uint8_t       ExpectedResponseId;
 
-	// ADD THESE TWO LINES:
 	int           ResultCount;
 	int           ExpectedResults;
-	int			  FilterActive;
-	int			  FilterOverrideByIoCtl;
+	int           FilterActive;
+	int           FilterOverrideByIoCtl;
 
 } PDU_CONN_STATE;
 
@@ -765,6 +768,118 @@ static const struct {
 	{ RSC_ID_OBD2DSC_ON_J1850VPW_2, PROTO_ID_ISOOB_J1850,        BUSTYPE_J1850_VPW, "RSC_ID_OBD2DSC_ON_J1850VPW_2" },
 };
 #define NUM_RESOURCES  3
+// ============================================================
+// PARAM + WORKING URID memory helpers
+// Must appear above Cll_SyncURID and PDUSetUniqueRespIdTable
+// ============================================================
+
+static void FreeParam(PDU_PARAM_ITEM *p)
+{
+	if (!p || !p->pComParamData) return;
+
+	switch (p->ComParamDataType) {
+	case 0x101: case 0x102:
+	case 0x103: case 0x104:
+	case 0x105: case 0x106:
+		free(p->pComParamData);
+		break;
+
+	case 0x107: case 0x109: {
+		struct { DWORD max; DWORD cur; void *data; } *bf = p->pComParamData;
+		if (bf->data) free(bf->data);
+		free(bf);
+		break;
+	}
+
+	case 0x108: {
+		struct { DWORD type; DWORD count; DWORD size; void *entries; } *mf = p->pComParamData;
+		if (mf->entries) free(mf->entries);
+		free(mf);
+		break;
+	}
+
+	default:
+		free(p->pComParamData);
+		break;
+	}
+	p->pComParamData = NULL;
+}
+
+static PDU_PARAM_ITEM* DeepCopyParam(PDU_PARAM_ITEM *dst, PDU_PARAM_ITEM *src)
+{
+	if (!dst || !src) return NULL;
+
+	dst->ItemType = src->ItemType;
+	dst->ComParamId = src->ComParamId;
+	dst->ComParamDataType = src->ComParamDataType;
+	dst->ComParamClass = src->ComParamClass;
+
+	if (!src->pComParamData) {
+		dst->pComParamData = NULL;
+		return dst;
+	}
+
+	switch (src->ComParamDataType) {
+	case 0x101: case 0x102:
+		dst->pComParamData = malloc(1);
+		*(BYTE*)dst->pComParamData = *(BYTE*)src->pComParamData;
+		break;
+	case 0x103: case 0x104:
+		dst->pComParamData = malloc(2);
+		*(USHORT*)dst->pComParamData = *(USHORT*)src->pComParamData;
+		break;
+	case 0x105: case 0x106:
+		dst->pComParamData = malloc(4);
+		*(DWORD*)dst->pComParamData = *(DWORD*)src->pComParamData;
+		break;
+	case 0x107: case 0x109: {
+		struct { DWORD max; DWORD cur; void *data; } *s, *d;
+		s = src->pComParamData;
+		d = malloc(0xC);
+		d->max = s->max;
+		d->cur = s->cur;
+		d->data = (s->max && s->data) ? malloc(s->max) : NULL;
+		if (d->data) { memset(d->data, 0, s->max); memcpy(d->data, s->data, s->cur); }
+		dst->pComParamData = d;
+		break;
+	}
+	case 0x108: {
+		struct { DWORD type; DWORD count; DWORD size; void *entries; } *s, *d;
+		s = src->pComParamData;
+		d = malloc(0x10);
+		d->type = s->type; d->count = s->count; d->size = s->size;
+		d->entries = (s->count && s->entries) ? malloc(s->count * 6) : NULL;
+		if (d->entries) { memset(d->entries, 0, s->count * 6); memcpy(d->entries, s->entries, s->count * 6); }
+		dst->pComParamData = d;
+		break;
+	}
+	default:
+		dst->pComParamData = NULL;
+		break;
+	}
+	return dst;
+}
+
+static void FreeWorkingURID(PDU_UNIQUE_RESP_ID_TABLE_ITEM *tbl)
+{
+	UNUM32 i, p;
+	if (!tbl) return;
+
+	if (tbl->pUniqueData) {
+		for (i = 0; i < tbl->NumEntries; i++) {
+			PDU_ECU_UNIQUE_RESP_DATA *entry = &tbl->pUniqueData[i];
+			if (entry->pParams) {
+				for (p = 0; p < entry->NumParamItems; p++)
+					FreeParam(&entry->pParams[p]);
+				free(entry->pParams);
+				entry->pParams = NULL;
+			}
+		}
+		free(tbl->pUniqueData);
+		tbl->pUniqueData = NULL;
+	}
+	free(tbl);
+}
 
 // ============================================================
 // RX gating helpers (URID + filter logic)
@@ -780,6 +895,7 @@ static void FreeVPWURIDTable(VPW_URID_TABLE *t)
 
 static void Cll_SyncURID(PDU_CONN_STATE *c)
 {
+	logmsg("Cll_SyncURID CALLED");
 	FreeVPWURIDTable(&c->ActiveURID);
 
 	if (!c)
@@ -836,6 +952,7 @@ static void Cll_SyncURID(PDU_CONN_STATE *c)
 
 static void RebuildJ2534Filters(PDU_CONN_STATE *c)
 {
+	logmsg("RebuildJ2534Filters: CALLED");
 	if (!c || c->J2534ChannelID == (unsigned long)-1)
 		return;
 
@@ -1571,10 +1688,19 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUConstruct(const char *OptionStr, void *pAPITag)
 
 	LOG0("PDUConstruct: Initializing global state");
 	memset(&g.Connections, 0, sizeof(g.Connections));
+
+	// ADD RIGHT HERE:
+	for (int i = 0; i < MAX_CONNECTIONS; i++) {
+		InitializeCriticalSection(&g.Connections[i].uridLock);
+		g.Connections[i].pWorkingURID = NULL;
+	}
+
+	// EVERYTHING BELOW STAYS EXACTLY THE SAME:
 	g.EventCallback = NULL;
 	g.pCallbackUserData = NULL;
 	g.DeviceOpen = 0;
 	g.hJ2534Dll = NULL;
+
 
 	LOG1("PDUConstruct: g.DllPath = %s", g.DllPath);
 
@@ -1702,60 +1828,74 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUConstruct(const char *OptionStr, void *pAPITag)
 * ====================================================================== */
 PDU_API T_PDU_UINT32 PDU_CALL PDUDestruct(void)
 {
-	LOG0("ENTER");
+    LOG0("ENTER");
 
-	EnterCriticalSection(&g.GlobalLock);
-	LOG0("Entered GlobalLock");
+    EnterCriticalSection(&g.GlobalLock);
+    LOG0("Entered GlobalLock");
 
-	for (int i = 0; i < MAX_CONNECTIONS; i++) {
-		LOG1("Checking connection slot %d (InUse=%d)", i, g.Connections[i].InUse);
+    for (int i = 0; i < MAX_CONNECTIONS; i++) {
+        LOG1("Checking connection slot %d (InUse=%d)", i, g.Connections[i].InUse);
 
-		if (g.Connections[i].InUse) {
-			PDU_CONN_STATE *c = &g.Connections[i];
+        if (g.Connections[i].InUse) {
+            PDU_CONN_STATE *c = &g.Connections[i];
 
-			LOG1("Stopping RX thread for slot %d", i);
-			StopRxThread(c);
+            LOG1("Stopping RX thread for slot %d", i);
+            StopRxThread(c);
 
-			if (c->J2534FilterID != (unsigned long)-1 && g.pfStopFilter) {
-				LOG1("Stopping J2534 filter %lu", c->J2534FilterID);
-				g.pfStopFilter(c->J2534ChannelID, c->J2534FilterID);
-			}
+            if (c->J2534FilterID != (unsigned long)-1 && g.pfStopFilter) {
+                LOG1("Stopping J2534 filter %lu", c->J2534FilterID);
+                g.pfStopFilter(c->J2534ChannelID, c->J2534FilterID);
+            }
 
-			if (c->J2534ChannelID != (unsigned long)-1 && g.pfDisconnect) {
-				LOG1("Disconnecting J2534 channel %lu", c->J2534ChannelID);
-				g.pfDisconnect(c->J2534ChannelID);
-			}
+            if (c->J2534ChannelID != (unsigned long)-1 && g.pfDisconnect) {
+                LOG1("Disconnecting J2534 channel %lu", c->J2534ChannelID);
+                g.pfDisconnect(c->J2534ChannelID);
+            }
 
-			LOG0("Destroying event queue");
-			evq_destroy(&c->EvtQ);
-		}
-	}
+            LOG0("Destroying event queue");
+            evq_destroy(&c->EvtQ);
 
-	if (g.DeviceOpen && g.pfClose) {
-		LOG1("Closing J2534 device %lu", g.J2534DeviceID);
-		g.pfClose(g.J2534DeviceID);
-	}
+            // ADD — URID cleanup before slot is wiped:
+            if (c->pWorkingURID) {
+                FreeWorkingURID(c->pWorkingURID);
+                c->pWorkingURID = NULL;
+            }
+            DeleteCriticalSection(&c->uridLock);
+        }
+    }
 
-	if (g.hJ2534Dll) {
-		LOG0("Freeing J2534 DLL");
-		FreeLibrary(g.hJ2534Dll);
-	}
+    if (g.DeviceOpen && g.pfClose) {
+        LOG1("Closing J2534 device %lu", g.J2534DeviceID);
+        g.pfClose(g.J2534DeviceID);
+    }
 
-	char savedDllPath[MAX_PATH];
-	strncpy(savedDllPath, g.DllPath, MAX_PATH - 1);
+    if (g.hJ2534Dll) {
+        LOG0("Freeing J2534 DLL");
+        FreeLibrary(g.hJ2534Dll);
+    }
 
-	LOG0("Clearing global state");
-	LeaveCriticalSection(&g.GlobalLock);
-	memset(&g, 0, sizeof(g));
+    char savedDllPath[MAX_PATH];
+    strncpy(savedDllPath, g.DllPath, MAX_PATH - 1);
 
-	strncpy(g.DllPath, savedDllPath, MAX_PATH - 1);
-	LOG1("Restored DLL path = %s", g.DllPath);
+    LOG0("Clearing global state");
+    LeaveCriticalSection(&g.GlobalLock);
+    memset(&g, 0, sizeof(g));
 
-	InitializeCriticalSection(&g.GlobalLock);
-	LOG0("Reinitialized GlobalLock");
+    strncpy(g.DllPath, savedDllPath, MAX_PATH - 1);
+    LOG1("Restored DLL path = %s", g.DllPath);
 
-	LOG0("EXIT OK");
-	return PDU_STATUS_NOERROR;
+    InitializeCriticalSection(&g.GlobalLock);
+    LOG0("Reinitialized GlobalLock");
+
+    // ADD — re-init per-connection locks after memset wipes them:
+    for (int i = 0; i < MAX_CONNECTIONS; i++) {
+        InitializeCriticalSection(&g.Connections[i].uridLock);
+        g.Connections[i].pWorkingURID = NULL;
+    }
+    LOG0("Reinitialized connection URID locks");
+
+    LOG0("EXIT OK");
+    return PDU_STATUS_NOERROR;
 }
 
 /* =========================================================================
@@ -3526,6 +3666,7 @@ PDU_API T_PDU_ERROR PDU_CALL PDUGetUniqueRespIdTable(
 	PDU_UNIQUE_RESP_ID_TABLE_ITEM **pUniqueRespIdTable)
 {
 	UNUSED(hMod);
+	logmsg("PDUGetUniqueRespIdTable: CALLED:");
 	if (!g.Constructed)      return PDU_ERR_PDUAPI_NOT_CONSTRUCTED;
 	if (!pUniqueRespIdTable) return PDU_ERR_INVALID_PARAMETERS;
 
