@@ -2914,21 +2914,8 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUSetUniqueRespIdTable(
     if (!c)
         return PDU_ERR_MODULE_NOT_CONNECTED;
 
-    if (c->pWorkingURID) {
-        if (c->pWorkingURID->pUniqueData) {
-            for (UNUM32 i = 0; i < c->pWorkingURID->NumEntries; i++) {
-                if (c->pWorkingURID->pUniqueData[i].pParams) {
-                    for (UNUM32 p = 0; p < c->pWorkingURID->pUniqueData[i].NumParamItems; p++) {
-                        free(c->pWorkingURID->pUniqueData[i].pParams[p].pComParamData);
-                    }
-                    free(c->pWorkingURID->pUniqueData[i].pParams);
-                }
-            }
-            free(c->pWorkingURID->pUniqueData);
-        }
-        free(c->pWorkingURID);
-        c->pWorkingURID = NULL;
-    }
+	FreeWorkingURID(c->pWorkingURID);
+	c->pWorkingURID = NULL;
 
     if (!pURIDTable || pURIDTable->NumEntries == 0 || !pURIDTable->pUniqueData)
         return PDU_STATUS_NOERROR;
@@ -2970,26 +2957,13 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUSetUniqueRespIdTable(
             }
         }
     }
-
+	Cll_SyncURID(c);
     return PDU_STATUS_NOERROR;
 
 fail:
-    if (c->pWorkingURID) {
-        if (c->pWorkingURID->pUniqueData) {
-            for (UNUM32 i = 0; i < c->pWorkingURID->NumEntries; i++) {
-                if (c->pWorkingURID->pUniqueData[i].pParams) {
-                    for (UNUM32 p = 0; p < c->pWorkingURID->pUniqueData[i].NumParamItems; p++) {
-                        free(c->pWorkingURID->pUniqueData[i].pParams[p].pComParamData);
-                    }
-                    free(c->pWorkingURID->pUniqueData[i].pParams);
-                }
-            }
-            free(c->pWorkingURID->pUniqueData);
-        }
-        free(c->pWorkingURID);
-        c->pWorkingURID = NULL;
-    }
-    return PDU_ERR_FCT_FAILED;
+	FreeWorkingURID(c->pWorkingURID);
+	c->pWorkingURID = NULL;
+	return PDU_ERR_FCT_FAILED;
 }
 
 /* =========================================================================
