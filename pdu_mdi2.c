@@ -230,6 +230,8 @@ typedef char      CHAR8;
 typedef uint32_t  T_PDU_UINT32;
 typedef uint8_t   T_PDU_UINT8;
 typedef int32_t   T_PDU_INT32;
+typedef UNUM32 T_PDU_TIMESTAMP;
+
 
 /* Item type enum */
 typedef enum E_PDU_IT {
@@ -809,11 +811,13 @@ static PDU_PARAM_ITEM* DeepCopyParam(PDU_PARAM_ITEM *dst, PDU_PARAM_ITEM *src)
 {
 	if (!dst || !src) return NULL;
 
+	// Shallow copy POD fields
 	dst->ItemType = src->ItemType;
 	dst->ComParamId = src->ComParamId;
 	dst->ComParamDataType = src->ComParamDataType;
 	dst->ComParamClass = src->ComParamClass;
 
+	// Deep copy pComParamData
 	if (!src->pComParamData) {
 		dst->pComParamData = NULL;
 		return dst;
@@ -1091,9 +1095,11 @@ static unsigned __stdcall RxThreadProc(void *pArg)
 	unsigned long timeout;
 	unsigned long numMsgs;
 	long ret;
+
 	c = (PDU_CONN_STATE *)pArg;
 
 	logmsg("RxThread Proc STARTED c=%p", c);
+
 	while (c->RxThreadRun) {
 
 		memset(&msg, 0, sizeof(msg));
@@ -1101,7 +1107,8 @@ static unsigned __stdcall RxThreadProc(void *pArg)
 		numMsgs = 1;
 
 		ret = g.pfReadMsgs(c->J2534ChannelID, &msg, &numMsgs, timeout);
-		logmsg("RxThread: pfReadMsgs ret=%ld numMsgs=%lu J2534ChannelID=%d", ret, numMsgs, c->J2534ChannelID);
+		logmsg("RxThread: pfReadMsgs ret=%ld numMsgs=%lu J2534ChannelID=%d",
+			ret, numMsgs, c->J2534ChannelID);
 
 		if (ret == J2534_STATUS_NOERROR && numMsgs > 0) {
 
@@ -1121,6 +1128,7 @@ static unsigned __stdcall RxThreadProc(void *pArg)
 			logmsg("");
 
 			if (c->ExpectedResponseId != 0) {
+
 				if (msg.DataSize == 0) {
 					logmsg("RxThread: drop, empty frame (primitive active)");
 					Sleep(5);
@@ -1149,8 +1157,9 @@ static unsigned __stdcall RxThreadProc(void *pArg)
 				PDU_RESULT_DATA *res;
 				T_PDU_UINT8 *data;
 				PDU_EVENT_ITEM *ev;
+				LARGE_INTEGER pc;
 
-				res = (PDU_RESULT_DATA *)calloc(1, sizeof(PDU_RESULT_DATA));  // ONLY ONCE
+				res = (PDU_RESULT_DATA *)calloc(1, sizeof(PDU_RESULT_DATA));
 				if (!res) {
 					logmsg("RxThread: calloc res failed");
 					Sleep(5);
@@ -1179,32 +1188,27 @@ static unsigned __stdcall RxThreadProc(void *pArg)
 				res->pExtraInfo = NULL;
 				res->NumDataBytes = msg.DataSize;
 				res->pDataBytes = data;
+				res->UniqueRespIdentifier = PDU_ID_UNDEF;
 
 				if (msg.DataSize >= 2) {
 					res->AcceptanceId = msg.Data[1];
 				}
-				else {
-					res->AcceptanceId = 0;
-				}
-
-				res->UniqueRespIdentifier = PDU_ID_UNDEF;
 
 				if (msg.DataSize >= 3 && c->ActiveURID.NumEntries > 0) {
 					UNUM32 i;
 					for (i = 0; i < c->ActiveURID.NumEntries; i++) {
-						VPW_URID_ENTRY *e;
+						VPW_URID_ENTRY *e = &c->ActiveURID.pEntries[i];
 
-						e = &c->ActiveURID.pEntries[i];
-
-						if (e->IsCatchAll || e->ExpectedSrcAddr == 0xFF) {
+						if (e->IsCatchAll || e->ExpectedSrcAddr == 0xFF)
 							continue;
-						}
 
 						if (msg.Data[0] == e->ExpectedHdrByte &&
 							msg.Data[1] == e->ExpectedTargetAddr &&
 							msg.Data[2] == e->ExpectedSrcAddr) {
+
 							res->UniqueRespIdentifier = e->UniqueRespIdentifier;
-							logmsg("RxThread: URID[%u] match id=0x%08X", i, e->UniqueRespIdentifier);
+							logmsg("RxThread: URID[%u] match id=0x%08X",
+								i, e->UniqueRespIdentifier);
 							break;
 						}
 					}
@@ -1212,20 +1216,36 @@ static unsigned __stdcall RxThreadProc(void *pArg)
 					if (res->UniqueRespIdentifier == PDU_ID_UNDEF) {
 						logmsg("RxThread: no URID match %02X-%02X-%02X dropped",
 							msg.Data[0], msg.Data[1], msg.Data[2]);
-						if (res->pDataBytes) {
+						if (res->pDataBytes)
 							free(res->pDataBytes);
-						}
 						free(res);
 						Sleep(5);
 						continue;
 					}
 				}
 
+				QueryPerformanceCounter(&pc);
+
+				res->TimestampFlags.NumFlagBytes = 4;
+				res->TimestampFlags.pFlagData = (T_PDU_UINT8 *)calloc(1, 4);
+				if (!res->TimestampFlags.pFlagData) {
+					logmsg("RxThread: calloc TimestampFlags failed");
+					if (res->pDataBytes)
+						free(res->pDataBytes);
+					free(res);
+					Sleep(5);
+					continue;
+				}
+
+				res->TimestampFlags.pFlagData[0] = 0x01;
+				res->StartMsgTimestamp = (T_PDU_TIMESTAMP)pc.QuadPart;
+
 				ev = (PDU_EVENT_ITEM *)calloc(1, sizeof(PDU_EVENT_ITEM));
 				if (!ev) {
-					if (data) {
+					if (res->TimestampFlags.pFlagData)
+						free(res->TimestampFlags.pFlagData);
+					if (data)
 						free(data);
-					}
 					free(res);
 					Sleep(5);
 					continue;
@@ -1242,9 +1262,11 @@ static unsigned __stdcall RxThreadProc(void *pArg)
 				if (!evq_push(&c->EvtQ, ev)) {
 					logmsg("RxThread: queue full, dropping ev=%p res=%p data=%p",
 						ev, res, res->pDataBytes);
-					if (res->pDataBytes) {
+
+					if (res->TimestampFlags.pFlagData)
+						free(res->TimestampFlags.pFlagData);
+					if (res->pDataBytes)
 						free(res->pDataBytes);
-					}
 					free(res);
 					free(ev);
 				}
@@ -1259,9 +1281,7 @@ static unsigned __stdcall RxThreadProc(void *pArg)
 						if (c->ResultCount >= c->ExpectedResults) {
 							PDU_EVENT_ITEM *evFin;
 							T_PDU_UINT32 *pStatus;
-							T_PDU_UINT32 finishedHandle;
-
-							finishedHandle = c->LastCoPrimHandle;
+							T_PDU_UINT32 finishedHandle = c->LastCoPrimHandle;
 
 							evFin = (PDU_EVENT_ITEM *)calloc(1, sizeof(PDU_EVENT_ITEM));
 							pStatus = (T_PDU_UINT32 *)calloc(1, sizeof(T_PDU_UINT32));
@@ -1273,7 +1293,8 @@ static unsigned __stdcall RxThreadProc(void *pArg)
 								evFin->pData = pStatus;
 
 								if (!evq_push(&c->EvtQ, evFin)) {
-									logmsg("RxThread: queue full dropping FINISHED hCoPrim=%lu", finishedHandle);
+									logmsg("RxThread: queue full dropping FINISHED hCoPrim=%lu",
+										finishedHandle);
 									free(pStatus);
 									free(evFin);
 								}
@@ -1283,12 +1304,10 @@ static unsigned __stdcall RxThreadProc(void *pArg)
 								}
 							}
 							else {
-								if (pStatus) {
+								if (pStatus)
 									free(pStatus);
-								}
-								if (evFin) {
+								if (evFin)
 									free(evFin);
-								}
 							}
 
 							c->PrimitiveActive = 0;
@@ -1315,9 +1334,11 @@ static unsigned __stdcall RxThreadProc(void *pArg)
 
 		Sleep(5);
 	}
+
 	logmsg("RXthread proc started c=%p", c);
 	return 0;
 }
+
 
 static void StartRxThread(PDU_CONN_STATE *c)
 {
@@ -2487,6 +2508,7 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUCreateComLogicalLink(
 		resourceId,
 		pRscData ? pRscData->BusTypeId : 0);
 
+
 	// reuse existing channel if you want
 	for (int i = 0; i < MAX_CONNECTIONS; i++) {
 		if (g.Connections[i].InUse && g.Connections[i].ChannelOpen) {
@@ -2505,11 +2527,12 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUCreateComLogicalLink(
 	c->ModHandle = hMod;
 
 	unsigned long chanID = 0;
-	logmsg("PDUCreateComLogicalLink: calling pfConnect proto=0x%lx baud=%lu",
-		J2534_J1850VPW, BUSTYPE_J1850_VPW_BAUD);
-	long ret = g.pfConnect(g.J2534DeviceID, J2534_J1850VPW, 0,
-		BUSTYPE_J1850_VPW_BAUD, &chanID);
-	logmsg("PDUCreateComLogicalLink: pfConnect returned %ld chanID=%lu", ret, chanID);
+	long protocolID = J2534_J1850VPW;
+	long baudrate = 10400;
+	logmsg("pfConnect dev=%lu proto=%ld flags=0 baud=%ld",
+		g.J2534DeviceID, protocolID, baudrate);
+	long ret = g.pfConnect(g.J2534DeviceID, protocolID, 0, baudrate, &chanID);
+	logmsg("pfConnect ret=%ld chanID=%lu", ret, chanID);
 
 	if (ret != J2534_STATUS_NOERROR) {
 		FreeConn(hConn);
@@ -2966,6 +2989,7 @@ fail:
 	return PDU_ERR_FCT_FAILED;
 }
 
+#if 0
 /* =========================================================================
 * PDUSendReceive — minimal working implementation
 * ====================================================================== */
@@ -3046,8 +3070,7 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUSendReceive(
 
 		{
 			unsigned long n = 1;
-			long r = g.pfReadMsgs(c->J2534ChannelID, &rx, &n, 10);
-
+			long r = g.pfReadMsgs(c->J2534ChannelID, &rx, &n, 50);
 			if (r != J2534_STATUS_NOERROR || n == 0) {
 				Sleep(2);
 				continue;
@@ -3125,7 +3148,7 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUSendReceive(
 	logmsg("PDUSendReceive: EXIT with %u responses", count);
 	return PDU_STATUS_NOERROR;
 }
-
+#endif
 
 /* =========================================================================
 * PDUGetEventItems — drain entire queue into linked list
@@ -3394,9 +3417,10 @@ T_PDU_UINT32 PDU_CALL PDUIoCtl(
 						list->NumFilterEntries * sizeof(PDU_IO_FILTER_DATA));
 				}
 				c->FilterActive = 1;
-				c->FilterOverrideByIoCtl = 1;
+				c->FilterOverrideByIoCtl = 0;
 			}
 			logmsg("PDUIoCtl: START_MSG_FILTER stored %u filters (software only)", list->NumFilterEntries);
+			RebuildJ2534Filters(c); // sync hardware
 		}
 		return PDU_STATUS_NOERROR;
 	}
@@ -3452,10 +3476,12 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUGetLastError(T_PDU_UINT32  hMod, T_PDU_UINT32  
 /* =========================================================================
 * PDUGetTimestamp
 * ====================================================================== */
-PDU_API T_PDU_UINT32 PDU_CALL PDUGetTimestamp(T_PDU_UINT32 hMod, T_PDU_UINT32 *pTimestamp)
+T_PDU_ERROR PDUGetTimestamp(T_PDU_UINT32 hMod, T_PDU_UINT32 *pTimestamp)
 {
-	UNUSED(hMod);
-	if (pTimestamp) *pTimestamp = GetTickCount();
+	if (!pTimestamp)
+		return PDU_ERR_INVALID_PARAMETERS;
+
+	*pTimestamp = (T_PDU_UINT32)GetTickCount();
 	return PDU_STATUS_NOERROR;
 }
 
@@ -3640,72 +3666,40 @@ PDU_API T_PDU_ERROR PDU_CALL PDUGetUniqueRespIdTable(
 	PDU_UNIQUE_RESP_ID_TABLE_ITEM **pUniqueRespIdTable)
 {
 	UNUSED(hMod);
-	logmsg("PDUGetUniqueRespIdTable: CALLED:");
-	if (!g.Constructed)      return PDU_ERR_PDUAPI_NOT_CONSTRUCTED;
-	if (!pUniqueRespIdTable) return PDU_ERR_INVALID_PARAMETERS;
+	logmsg("PDUGetUniqueRespIdTable: CALLED hCLL=%u", hCLL);
+
+	if (!g.Constructed)
+		return PDU_ERR_PDUAPI_NOT_CONSTRUCTED;
+	if (!pUniqueRespIdTable)
+		return PDU_ERR_INVALID_PARAMETERS;
 
 	PDU_CONN_STATE *c = GetConn(hCLL);
-	if (!c) return PDU_ERR_INVALID_HANDLE;
+	if (!c)
+		return PDU_ERR_INVALID_HANDLE;
 
 	PDU_UNIQUE_RESP_ID_TABLE_ITEM *tbl =
-		(PDU_UNIQUE_RESP_ID_TABLE_ITEM*)calloc(1, sizeof(PDU_UNIQUE_RESP_ID_TABLE_ITEM));
-	if (!tbl) return PDU_ERR_FCT_FAILED;
+		(PDU_UNIQUE_RESP_ID_TABLE_ITEM*)calloc(1, sizeof(*tbl));
+	if (!tbl)
+		return PDU_ERR_FCT_FAILED;
+
+	PDU_ECU_UNIQUE_RESP_DATA *entry =
+		(PDU_ECU_UNIQUE_RESP_DATA*)calloc(1, sizeof(*entry));
+	if (!entry) {
+		free(tbl);
+		return PDU_ERR_FCT_FAILED;
+	}
 
 	tbl->ItemType = PDU_IT_UNIQUE_RESP_ID_TABLE;
 	tbl->NumEntries = 1;
-
-	PDU_ECU_UNIQUE_RESP_DATA *entry =
-		(PDU_ECU_UNIQUE_RESP_DATA*)calloc(1, sizeof(PDU_ECU_UNIQUE_RESP_DATA));
-	if (!entry) { free(tbl); return PDU_ERR_FCT_FAILED; }
-
-	entry->UniqueRespIdentifier = PDU_ID_UNDEF;
-	entry->NumParamItems = 3;
-
-	PDU_PARAM_ITEM *params =
-		(PDU_PARAM_ITEM*)calloc(3, sizeof(PDU_PARAM_ITEM));
-	if (!params) { free(entry); free(tbl); return PDU_ERR_FCT_FAILED; }
-
-	params[0].ComParamId = CP_EcuRespSourceAddress;
-	params[0].ComParamClass = PDU_PC_UNIQUE_ID;
-	params[0].ComParamDataType = PDU_PT_UNUM32;
-	params[0].pComParamData = calloc(1, sizeof(UNUM32));
-	if (!params[0].pComParamData) { free(params); free(entry); free(tbl); return PDU_ERR_FCT_FAILED; }
-	*(UNUM32*)params[0].pComParamData = 0x10;
-
-	params[1].ComParamId = CP_FuncRespFormatPriorityType;
-	params[1].ComParamClass = PDU_PC_UNIQUE_ID;
-	params[1].ComParamDataType = PDU_PT_UNUM32;
-	params[1].pComParamData = calloc(1, sizeof(UNUM32));
-	if (!params[1].pComParamData) {
-		free(params[0].pComParamData);
-		free(params);
-		free(entry);
-		free(tbl);
-		return PDU_ERR_FCT_FAILED;
-	}
-	*(UNUM32*)params[1].pComParamData = 0x48;
-
-	params[2].ComParamId = CP_FuncRespTargetAddr;
-	params[2].ComParamClass = PDU_PC_UNIQUE_ID;
-	params[2].ComParamDataType = PDU_PT_UNUM32;
-	params[2].pComParamData = calloc(1, sizeof(UNUM32));
-	if (!params[2].pComParamData) {
-		free(params[1].pComParamData);
-		free(params[0].pComParamData);
-		free(params);
-		free(entry);
-		free(tbl);
-		return PDU_ERR_FCT_FAILED;
-	}
-	*(UNUM32*)params[2].pComParamData = 0x6B;
-
-
-
-	entry->pParams = params;
 	tbl->pUniqueData = entry;
 
+	entry->UniqueRespIdentifier = PDU_ID_UNDEF;
+	entry->NumParamItems = 0;
+	entry->pParams = NULL;
+
 	*pUniqueRespIdTable = tbl;
-	logmsg("PDUGetUniqueRespIdTable: returned default VPW template");
+
+	logmsg("PDUGetUniqueRespIdTable: returned catch-all template");
 	return PDU_STATUS_NOERROR;
 }
 
