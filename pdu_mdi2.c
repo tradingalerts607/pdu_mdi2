@@ -328,6 +328,8 @@ typedef struct {
 	PDU_IO_FILTER_DATA *pFilterData;
 } PDU_IO_FILTER_LIST;
 
+#pragma pack(push, 4)
+
 /* Per-module data row - spec 11.1.4.6 */
 typedef struct {
 	UNUM32        ModuleTypeId;
@@ -346,10 +348,10 @@ typedef struct {
 #define PDU_DEVST_AVAIL  0x00000001
 
 typedef struct {
-	T_PDU_UINT32 ResourceId;
-	T_PDU_UINT32 ProtocolId;
 	T_PDU_UINT32 BusTypeId;
-	const char  *ShortName;
+	T_PDU_UINT32 ProtocolId;
+	T_PDU_UINT32 NumPinData;
+	void        *pPinData;
 } PDU_RSC_DATA;
 
 typedef struct {
@@ -362,7 +364,12 @@ typedef struct {
 	PDU_DEVICE_DATA devices[4];
 
 	int numResources;
-	PDU_RSC_DATA resources[8];
+	struct {
+		T_PDU_UINT32 ResourceId;
+		T_PDU_UINT32 ProtocolId;
+		T_PDU_UINT32 BusTypeId;
+		const char  *ShortName;
+	} resources[8];
 
 	int nextCLL;
 
@@ -556,6 +563,14 @@ typedef struct PDU_EVENT_ITEM {
 	void         *pData;          // offset 16
 } PDU_EVENT_ITEM;
 
+typedef struct {
+	T_PDU_IT      ItemType;
+	UNUM32        NumEntries;
+	T_PDU_UINT32 *pResourceIdData;
+} PDU_RSC_ID_ITEM;
+
+#pragma pack(pop)
+
 /* keep your original PDU_HANDLE_UNDEF if you want, but only define it once */
 #ifndef PDU_HANDLE_UNDEF
 #define PDU_HANDLE_UNDEF 0xFFFFFFFEUL
@@ -571,7 +586,7 @@ typedef void (PDU_CALL *T_PDU_CALLBACK)(T_PDU_UINT32 ItemType,
 /* =========================================================================
 * Event queue � lock-free ring buffer of PDU_EVENT_ITEM*
 * ====================================================================== */
-#define EVT_QUEUE_SIZE  128     /* must be power of 2 */
+#define EVT_QUEUE_SIZE  1024     /* must be power of 2 */
 #define EVT_QUEUE_MASK  (EVT_QUEUE_SIZE - 1)
 
 typedef struct {
@@ -1102,255 +1117,153 @@ static int Cll_ResultAllowed(PDU_CONN_STATE *c, PASSTHRU_MSG *msg)
 * ====================================================================== */
 static unsigned __stdcall RxThreadProc(void *pArg)
 {
-	PDU_CONN_STATE *c;
-	PASSTHRU_MSG msg;
+	PDU_CONN_STATE *c = (PDU_CONN_STATE *)pArg;
+	PASSTHRU_MSG msgs[20];
 	unsigned long timeout;
 	unsigned long numMsgs;
 	long ret;
 
-	c = (PDU_CONN_STATE *)pArg;
-
 	logmsg("RxThread Proc STARTED c=%p", c);
 
 	while (c->RxThreadRun) {
-
-		memset(&msg, 0, sizeof(msg));
 		timeout = 50;
-		numMsgs = 1;
+		numMsgs = 20; // Batch read
 
-		ret = g.pfReadMsgs(c->J2534ChannelID, &msg, &numMsgs, timeout);
-		logmsg("RxThread: pfReadMsgs ret=%ld numMsgs=%lu J2534ChannelID=%d",
-			ret, numMsgs, c->J2534ChannelID);
+		ret = g.pfReadMsgs(c->J2534ChannelID, msgs, &numMsgs, timeout);
 
 		if (ret == J2534_STATUS_NOERROR && numMsgs > 0) {
+			unsigned long m;
+			for (m = 0; m < numMsgs; m++) {
+				PASSTHRU_MSG *msg = &msgs[m];
 
-			if (msg.RxStatus & TX_MSG_TYPE) {
-				logmsg("RxThread: dropping TX echo RxStatus=0x%lx", msg.RxStatus);
-				Sleep(5);
-				continue;
-			}
-
-			logmsg("RxThread: data[%lu]=", msg.DataSize);
-			{
-				unsigned long i;
-				for (i = 0; i < msg.DataSize && i < sizeof(msg.Data); i++) {
-					logmsg(" %02X", msg.Data[i]);
-				}
-			}
-			logmsg("");
-
-			if (c->ExpectedResponseId != 0) {
-
-				if (msg.DataSize == 0) {
-					logmsg("RxThread: drop, empty frame (primitive active)");
-					Sleep(5);
+				if (msg->RxStatus & TX_MSG_TYPE) {
 					continue;
 				}
 
-				if (msg.Data[0] != c->ExpectedResponseId) {
-					logmsg("RxThread: drop header=0x%02X expected=0x%02X (primitive active)",
-						msg.Data[0], c->ExpectedResponseId);
-					Sleep(5);
-					continue;
-				}
-
-				c->LastCoPrimTime = GetTickCount();
-				logmsg("RxThread: ACCEPT header=0x%02X expected=0x%02X",
-					msg.Data[0], c->ExpectedResponseId);
-			}
-
-			if (!Cll_ResultAllowed(c, &msg)) {
-				logmsg("RxThread: frame dropped by software message filter");
-				Sleep(5);
-				continue;
-			}
-
-			{
-				PDU_RESULT_DATA *res;
-				T_PDU_UINT8 *data;
-				PDU_EVENT_ITEM *ev;
-				LARGE_INTEGER pc;
-
-				res = (PDU_RESULT_DATA *)calloc(1, sizeof(PDU_RESULT_DATA));
-				if (!res) {
-					logmsg("RxThread: calloc res failed");
-					Sleep(5);
-					continue;
-				}
-
-				data = NULL;
-				if (msg.DataSize > 0) {
-					data = (T_PDU_UINT8 *)calloc(1, msg.DataSize);
-					if (!data) {
-						logmsg("RxThread: calloc data failed");
-						free(res);
-						Sleep(5);
+				// 1. Primitive Gating
+				if (c->ExpectedResponseId != 0) {
+					if (msg->DataSize == 0 || msg->Data[0] != c->ExpectedResponseId) {
+						// Not our response, and a primitive is active -> drop
 						continue;
 					}
-					memcpy(data, msg.Data, msg.DataSize);
+					c->LastCoPrimTime = GetTickCount();
+				}
+				else {
+					// 2. Unsolicited/Background Filtering
+					// If no URID table and no software filters, drop everything background chatter
+					if (c->ActiveURID.NumEntries == 0 && !c->FilterActive) {
+						continue;
+					}
 				}
 
-				res->RxFlag.NumFlagBytes = 0;
-				res->RxFlag.pFlagData = NULL;
-				res->AcceptanceId = 0;
-				res->TimestampFlags.NumFlagBytes = 0;
-				res->TimestampFlags.pFlagData = NULL;
-				res->TxMsgDoneTimestamp = 0;
-				res->StartMsgTimestamp = 0;
-				res->pExtraInfo = NULL;
-				res->NumDataBytes = msg.DataSize;
-				res->pDataBytes = data;
+				// 3. Software Filtering (if active)
+				if (!Cll_ResultAllowed(c, msg)) {
+					continue;
+				}
+
+				// 4. URID Matching & Result Building
+				PDU_RESULT_DATA *res = (PDU_RESULT_DATA *)calloc(1, sizeof(PDU_RESULT_DATA));
+				if (!res) continue;
+
+				if (msg->DataSize > 0) {
+					res->pDataBytes = (T_PDU_UINT8 *)calloc(1, msg->DataSize);
+					if (res->pDataBytes) {
+						memcpy(res->pDataBytes, msg->Data, msg->DataSize);
+						res->NumDataBytes = msg->DataSize;
+					}
+				}
+
+				if (msg->DataSize >= 2) res->AcceptanceId = msg->Data[1];
 				res->UniqueRespIdentifier = PDU_ID_UNDEF;
 
-				if (msg.DataSize >= 2) {
-					res->AcceptanceId = msg.Data[1];
-				}
-
-				if (msg.DataSize >= 3 && c->ActiveURID.NumEntries > 0) {
+				// Match URID if table exists
+				if (msg->DataSize >= 3 && c->ActiveURID.NumEntries > 0) {
 					UNUM32 i;
 					for (i = 0; i < c->ActiveURID.NumEntries; i++) {
 						VPW_URID_ENTRY *e = &c->ActiveURID.pEntries[i];
-
-						if (e->IsCatchAll || e->ExpectedSrcAddr == 0xFF)
-							continue;
-
-						if (msg.Data[0] == e->ExpectedHdrByte &&
-							msg.Data[1] == e->ExpectedTargetAddr &&
-							msg.Data[2] == e->ExpectedSrcAddr) {
-
+						if (e->IsCatchAll) {
 							res->UniqueRespIdentifier = e->UniqueRespIdentifier;
-							logmsg("RxThread: URID[%u] match id=0x%08X",
-								i, e->UniqueRespIdentifier);
+							break;
+						}
+						if (msg->Data[0] == e->ExpectedHdrByte &&
+							msg->Data[1] == e->ExpectedTargetAddr &&
+							msg->Data[2] == e->ExpectedSrcAddr) {
+							res->UniqueRespIdentifier = e->UniqueRespIdentifier;
 							break;
 						}
 					}
-
+					// If URID table exists but no match, drop it
 					if (res->UniqueRespIdentifier == PDU_ID_UNDEF) {
-						logmsg("RxThread: no URID match %02X-%02X-%02X dropped",
-							msg.Data[0], msg.Data[1], msg.Data[2]);
-						if (res->pDataBytes)
-							free(res->pDataBytes);
+						if (res->pDataBytes) free(res->pDataBytes);
 						free(res);
-						Sleep(5);
 						continue;
 					}
 				}
 
+				// 5. Build Event and Push
+				LARGE_INTEGER pc;
 				QueryPerformanceCounter(&pc);
-
 				res->TimestampFlags.NumFlagBytes = 4;
 				res->TimestampFlags.pFlagData = (T_PDU_UINT8 *)calloc(1, 4);
-				if (!res->TimestampFlags.pFlagData) {
-					logmsg("RxThread: calloc TimestampFlags failed");
-					if (res->pDataBytes)
-						free(res->pDataBytes);
-					free(res);
-					Sleep(5);
-					continue;
-				}
-
-				res->TimestampFlags.pFlagData[0] = 0x01;
+				if (res->TimestampFlags.pFlagData) res->TimestampFlags.pFlagData[0] = 0x01;
 				res->StartMsgTimestamp = (T_PDU_TIMESTAMP)pc.QuadPart;
 
-				ev = (PDU_EVENT_ITEM *)calloc(1, sizeof(PDU_EVENT_ITEM));
+				PDU_EVENT_ITEM *ev = (PDU_EVENT_ITEM *)calloc(1, sizeof(PDU_EVENT_ITEM));
 				if (!ev) {
-					if (res->TimestampFlags.pFlagData)
-						free(res->TimestampFlags.pFlagData);
-					if (data)
-						free(data);
+					if (res->TimestampFlags.pFlagData) free(res->TimestampFlags.pFlagData);
+					if (res->pDataBytes) free(res->pDataBytes);
 					free(res);
-					Sleep(5);
 					continue;
 				}
 
 				ev->ItemType = PDU_IT_RESULT;
 				ev->hCoPrimitive = c->LastCoPrimHandle;
-				ev->Timestamp = msg.Timestamp ? msg.Timestamp : GetTickCount();
+				ev->Timestamp = msg->Timestamp ? msg->Timestamp : GetTickCount();
 				ev->pData = res;
 
-				logmsg("RxThread: pushing result ev=%p res=%p pDataBytes=%p NumDataBytes=%lu hCoPrim=%lu",
-					ev, res, res->pDataBytes, res->NumDataBytes, ev->hCoPrimitive);
-
 				if (!evq_push(&c->EvtQ, ev)) {
-					logmsg("RxThread: queue full, dropping ev=%p res=%p data=%p",
-						ev, res, res->pDataBytes);
-
-					if (res->TimestampFlags.pFlagData)
-						free(res->TimestampFlags.pFlagData);
-					if (res->pDataBytes)
-						free(res->pDataBytes);
+					if (res->TimestampFlags.pFlagData) free(res->TimestampFlags.pFlagData);
+					if (res->pDataBytes) free(res->pDataBytes);
 					free(res);
 					free(ev);
 				}
 				else {
-					logmsg("RxThread: pushed event to queue");
-
+					// Handle Primitive Completion
 					if (c->PrimitiveActive) {
 						c->ResultCount++;
-						logmsg("RxThread: result %d/%d hCoPrim=%lu",
-							c->ResultCount, c->ExpectedResults, c->LastCoPrimHandle);
-
 						if (c->ResultCount >= c->ExpectedResults) {
-							PDU_EVENT_ITEM *evFin;
-							T_PDU_UINT32 *pStatus;
 							T_PDU_UINT32 finishedHandle = c->LastCoPrimHandle;
-
-							evFin = (PDU_EVENT_ITEM *)calloc(1, sizeof(PDU_EVENT_ITEM));
-							pStatus = (T_PDU_UINT32 *)calloc(1, sizeof(T_PDU_UINT32));
-
+							PDU_EVENT_ITEM *evFin = (PDU_EVENT_ITEM *)calloc(1, sizeof(PDU_EVENT_ITEM));
+							T_PDU_UINT32 *pStatus = (T_PDU_UINT32 *)calloc(1, sizeof(T_PDU_UINT32));
 							if (evFin && pStatus) {
 								*pStatus = PDU_COPST_FINISHED;
 								evFin->ItemType = PDU_IT_STATUS;
 								evFin->hCoPrimitive = finishedHandle;
 								evFin->pData = pStatus;
-
-								if (!evq_push(&c->EvtQ, evFin)) {
-									logmsg("RxThread: queue full dropping FINISHED hCoPrim=%lu",
-										finishedHandle);
-									free(pStatus);
-									free(evFin);
-								}
-								else {
-									logmsg("RxThread: FINISHED after %d results hCoPrim=%lu",
-										c->ResultCount, finishedHandle);
-								}
+								evq_push(&c->EvtQ, evFin);
 							}
-							else {
-								if (pStatus)
-									free(pStatus);
-								if (evFin)
-									free(evFin);
-							}
-
 							c->PrimitiveActive = 0;
 							c->ExpectedResponseId = 0;
-							c->LastCoPrimHandle = 0;
-							c->ResultCount = 0;
-							c->ExpectedResults = 1;
 						}
 					}
-
 					if (g.EventCallback) {
-						g.EventCallback(PDU_EVT_DATA_AVAILABLE,
-							1,
-							(T_PDU_UINT32)(c - g.Connections),
-							NULL,
-							g.pCallbackUserData);
+						g.EventCallback(PDU_EVT_DATA_AVAILABLE, 1, (T_PDU_UINT32)(c - g.Connections), NULL, g.pCallbackUserData);
 					}
 				}
 			}
 		}
-		else if (ret != J2534_ERR_BUFFER_EMPTY && ret != J2534_STATUS_NOERROR) {
-			logmsg("RxThread: pfReadMsgs ret=%ld", ret);
+		else if (ret == J2534_ERR_BUFFER_EMPTY) {
+			Sleep(2);
 		}
-
-		Sleep(5);
+		else {
+			logmsg("RxThread: pfReadMsgs error %ld", ret);
+			Sleep(10);
+		}
 	}
 
-	logmsg("RXthread proc started c=%p", c);
+	logmsg("RxThread Proc EXIT c=%p", c);
 	return 0;
 }
-
 
 static void StartRxThread(PDU_CONN_STATE *c)
 {
@@ -2027,10 +1940,10 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUGetModuleIds(PDU_MODULE_ITEM **pModuleIdList)
 * ====================================================================== */
 PDU_API T_PDU_UINT32 PDU_CALL PDUGetResourceIds(
 	T_PDU_UINT32  hMod,
-	void         *pResourceIdData,
+	void         *pRscData,
 	T_PDU_UINT32 **ppList)
 {
-	UNUSED(hMod); UNUSED(pResourceIdData);
+	UNUSED(hMod); UNUSED(pRscData);
 
 	logmsg("PDUGetResourceIds: ENTER hMod=%u ppList=%p", hMod, ppList);
 
@@ -2040,13 +1953,7 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUGetResourceIds(
 	if (!ppList)
 		return PDU_ERR_INVALID_PARAMETERS;
 
-	/* Accept PDU_HANDLE_UNDEF as a valid hMod (some callers use it) */
-	if (hMod != RUNTIME_ModuleID && hMod != PDU_HANDLE_UNDEF) {
-		logmsg("PDUGetResourceIds: invalid hMod=%u", hMod);
-		return PDU_ERR_INVALID_HANDLE;
-	}
-
-	/* Allocate list: [count, id0, id1, ..., PDU_ID_UNDEF] */
+	/* Allocate list: [count, id0, id1, ..., PDU_ID_UNDEF] per ISO 22900-2 11.2.3.1 */
 	T_PDU_UINT32 *list = (T_PDU_UINT32*)malloc((NUM_RESOURCES + 2) * sizeof(T_PDU_UINT32));
 	if (!list) {
 		logmsg("PDUGetResourceIds: malloc FAILED");
@@ -2268,13 +2175,18 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUGetObjectId(
 			{ "CP_RepeatReqCountTrans",      141 },
 			{ "CP_RequestAddrMode",          142 },
 			{ "CP_EcuRespSourceAddr",        143 },
+			{ "CP_EcuRespSourceAddress",     143 },
 			{ "CP_TesterSourceAddr",         144 },
 			{ "CP_PhysReqFormatPrioType",    145 },
+			{ "CP_PhysReqFormatPriorityType", 145 },
 			{ "CP_PhysReqTargetAddr",        146 },
 			{ "CP_PhysRespFormatPrioType",   147 },
+			{ "CP_PhysRespFormatPriorityType", 147 },
 			{ "CP_FuncReqFormatPrioType",    148 },
+			{ "CP_FuncReqFormatPriorityType", 148 },
 			{ "CP_FuncReqTargetAddr",        149 },
 			{ "CP_FuncRespFormatPrioType",   150 },
+			{ "CP_FuncRespFormatPriorityType", 150 },
 			{ "CP_FuncRespTargetAddr",       151 },
 			{ "CP_EnableConcatenation",      152 },
 			{ "CP_FillerByte",               153 },
@@ -2516,17 +2428,38 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUCreateComLogicalLink(
 	if (!g.DeviceOpen)  return PDU_ERR_MODULE_NOT_CONNECTED;
 	if (!phCLL)         return PDU_ERR_INVALID_PARAMETERS;
 
-	logmsg("PDUCreateComLogicalLink: resourceId=%u BusTypeId=%u (forcing accept)",
-		resourceId,
-		pRscData ? pRscData->BusTypeId : 0);
+	T_PDU_UINT32 finalResourceId = resourceId;
+	T_PDU_UINT32 finalProtocolId = 0;
+	T_PDU_UINT32 finalBusTypeId = 0;
 
+	if (resourceId != PDU_ID_UNDEF) {
+		for (int i = 0; i < NUM_RESOURCES; i++) {
+			if (g_Resources[i].ResourceId == resourceId) {
+				finalProtocolId = g_Resources[i].ProtocolId;
+				finalBusTypeId = g_Resources[i].BusTypeId;
+				break;
+			}
+		}
+	}
+	else if (pRscData) {
+		finalProtocolId = pRscData->ProtocolId;
+		finalBusTypeId = pRscData->BusTypeId;
+	}
 
-	// reuse existing channel if you want
+	logmsg("PDUCreateComLogicalLink: resourceId=%u BusTypeId=%u ProtoId=%u",
+		finalResourceId, finalBusTypeId, finalProtocolId);
+
+	// For now, we only support J1850 VPW (BusType 11)
+	if (finalBusTypeId != BUSTYPE_J1850_VPW && finalBusTypeId != 0) {
+		logmsg("PDUCreateComLogicalLink: WARNING - requested non-VPW bus %u, forcing VPW", finalBusTypeId);
+	}
+
+	// reuse existing channel
 	for (int i = 0; i < MAX_CONNECTIONS; i++) {
 		if (g.Connections[i].InUse && g.Connections[i].ChannelOpen) {
 			logmsg("PDUCreateComLogicalLink: reusing existing channel slot %d chanID=%lu",
 				i, g.Connections[i].J2534ChannelID);
-			*phCLL = i;              // <-- CRITICAL: return connection index
+			*phCLL = i;
 			return PDU_STATUS_NOERROR;
 		}
 	}
@@ -2535,7 +2468,7 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUCreateComLogicalLink(
 	if (!AllocConn(&hConn)) return PDU_ERR_FCT_FAILED;
 
 	PDU_CONN_STATE *c = &g.Connections[hConn];
-	c->ResourceId = resourceId;
+	c->ResourceId = finalResourceId;
 	c->ModHandle = hMod;
 
 	unsigned long chanID = 0;
@@ -2554,7 +2487,7 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUCreateComLogicalLink(
 	c->J2534ChannelID = chanID;
 	c->ChannelOpen = 1;
 
-	*phCLL = hConn;                  // <-- THIS is what PDUSetComParam will see as hCLL
+	*phCLL = hConn;
 
 	logmsg("PDUCreateComLogicalLink: EXIT OK hCLL=%u chanID=%lu", hConn, chanID);
 	return PDU_STATUS_NOERROR;
@@ -3214,10 +3147,18 @@ T_PDU_UINT32 PDU_CALL PDUIoCtl(
 	if (!g.Constructed)
 		return PDU_ERR_PDUAPI_NOT_CONSTRUCTED;
 
-	// *** KEY FIX: accept undefined handles safely ***
+	if (ppOutputData) *ppOutputData = NULL;
+
+	// Accept undefined handles for module-level IOCTLs
 	if (hConn == PDU_ID_UNDEF || hConn == 0xFFFFFFFF) {
-		logmsg("PDUIoCtl: hConn is UNDEF, returning NOERROR");
-		return PDU_STATUS_NOERROR;
+		if (IoCtlCommandId != PDU_IOCTL_READ_VBATT &&
+			IoCtlCommandId != PDU_IOCTL_READ_PROG_VOLTAGE &&
+			IoCtlCommandId != PDU_IOCTL_GET_CABLE_ID &&
+			IoCtlCommandId != PDU_IOCTL_READ_IGNITION_SENSE) 
+		{
+			logmsg("PDUIoCtl: hConn is UNDEF, returning NOERROR");
+			return PDU_STATUS_NOERROR;
+		}
 	}
 
 	PDU_CONN_STATE *c = GetConn(hConn);
@@ -3569,7 +3510,12 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUDestroyItem(PDU_ITEM *p)
 		if (mi->pModuleData) free(mi->pModuleData);
 		free(p);
 	}
-	else if (p->ItemType == PDU_IT_UNIQUE_RESP_ID_TABLE) {  // ADD THIS
+	else if (p->ItemType == PDU_IT_RSC_ID) {
+		PDU_RSC_ID_ITEM *ri = (PDU_RSC_ID_ITEM*)p;
+		if (ri->pResourceIdData) free(ri->pResourceIdData);
+		free(p);
+	}
+	else if (p->ItemType == PDU_IT_UNIQUE_RESP_ID_TABLE) {
 		PDU_UNIQUE_RESP_ID_TABLE_ITEM *tbl = (PDU_UNIQUE_RESP_ID_TABLE_ITEM*)p;
 		if (tbl->pUniqueData) {
 			for (UNUM32 i = 0; i < tbl->NumEntries; i++) {
@@ -3681,29 +3627,52 @@ PDU_API T_PDU_ERROR PDU_CALL PDUGetUniqueRespIdTable(
 	if (!c)
 		return PDU_ERR_INVALID_HANDLE;
 
+	/* Allocate table container */
 	PDU_UNIQUE_RESP_ID_TABLE_ITEM *tbl =
 		(PDU_UNIQUE_RESP_ID_TABLE_ITEM*)calloc(1, sizeof(*tbl));
-	if (!tbl)
-		return PDU_ERR_FCT_FAILED;
+	if (!tbl) return PDU_ERR_FCT_FAILED;
 
+	/* Allocate 1 entry (template) */
 	PDU_ECU_UNIQUE_RESP_DATA *entry =
 		(PDU_ECU_UNIQUE_RESP_DATA*)calloc(1, sizeof(*entry));
-	if (!entry) {
-		free(tbl);
-		return PDU_ERR_FCT_FAILED;
-	}
+	if (!entry) { free(tbl); return PDU_ERR_FCT_FAILED; }
+
+	/* Allocate 3 params for the template: SourceAddr, Format, TargetAddr */
+	PDU_PARAM_ITEM *params = (PDU_PARAM_ITEM*)calloc(3, sizeof(PDU_PARAM_ITEM));
+	if (!params) { free(entry); free(tbl); return PDU_ERR_FCT_FAILED; }
 
 	tbl->ItemType = PDU_IT_UNIQUE_RESP_ID_TABLE;
 	tbl->NumEntries = 1;
 	tbl->pUniqueData = entry;
 
 	entry->UniqueRespIdentifier = PDU_ID_UNDEF;
-	entry->NumParamItems = 0;
-	entry->pParams = NULL;
+	entry->NumParamItems = 3;
+	entry->pParams = params;
+
+	// Param 0: CP_EcuRespSourceAddress
+	params[0].ItemType = PDU_IT_PARAM;
+	params[0].ComParamId = CP_EcuRespSourceAddress;
+	params[0].ComParamDataType = PDU_PT_UNUM32;
+	params[0].ComParamClass = PDU_PC_PROTOCOL;
+	params[0].pComParamData = calloc(1, 4);
+
+	// Param 1: CP_FuncRespFormatPriorityType
+	params[1].ItemType = PDU_IT_PARAM;
+	params[1].ComParamId = CP_FuncRespFormatPriorityType;
+	params[1].ComParamDataType = PDU_PT_UNUM32;
+	params[1].ComParamClass = PDU_PC_PROTOCOL;
+	params[1].pComParamData = calloc(1, 4);
+
+	// Param 2: CP_FuncRespTargetAddr
+	params[2].ItemType = PDU_IT_PARAM;
+	params[2].ComParamId = CP_FuncRespTargetAddr;
+	params[2].ComParamDataType = PDU_PT_UNUM32;
+	params[2].ComParamClass = PDU_PC_PROTOCOL;
+	params[2].pComParamData = calloc(1, 4);
 
 	*pUniqueRespIdTable = tbl;
 
-	logmsg("PDUGetUniqueRespIdTable: returned catch-all template");
+	logmsg("PDUGetUniqueRespIdTable: returned standard MDI template (3 params)");
 	return PDU_STATUS_NOERROR;
 }
 
