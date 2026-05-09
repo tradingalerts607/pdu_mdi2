@@ -4,35 +4,31 @@ EXPORTS
     PDUConstruct
     PDUDestruct
     PDUGetModuleIds
+    PDUGetDeviceIds
+    PDUOpenDevice
+    PDUOpenResource
     PDUGetResourceIds
     PDUGetObjectId
     PDUGetObjectIds
     PDUGetVersion
     PDUGetStatus
     PDUCreateComLogicalLink
+    PDUDestroyComLogicalLink
     PDUConnect
     PDUDisconnect
     PDUStartComPrimitive
-    PDUGetEventItem
-    PDUDestroyItem
-	PDUDestroyItems
-    PDUDestroyComLogicalLink
-    PDUModuleConnect
-    PDUModuleDisconnect
-    PDULockResource
-    PDUUnlockResource
-    PDUGetUniqueRespIdTable
-    PDUSetUniqueRespIdTable
-    PDUGetResourceStatus
-    PDUGetTimestamp
-    PDUIoCtl
-    PDUGetLastError
-    PDUGetEventItems
     PDUCancelComPrimitive
+    PDUGetEventItem
+    PDURegisterEventCallback
     PDUSetComParam
     PDUGetComParam
-    PDUGetConflictingResources
-    PDURegisterEventCallback
+    PDUSetUniqueRespIdTable
+    PDUGetUniqueRespIdTable
+    PDUIoCtl
+    PDUDestroyItem
+    PDUDestroyItems
+    PDUGetLastError
+    PDUGetTimestamp
 
     ; VCI surface (stubs)
     VCIAPIDestruct
@@ -44,5 +40,7 @@ EXPORTS
     VCIRegisterEventCallback
     VCISetLogServer
     VCIStopLogging
-	DllRegisterServer
-	DllUnregisterServer
+
+    ; Registration
+    DllRegisterServer
+    DllUnregisterServer

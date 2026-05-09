@@ -1,6 +1,6 @@
 /*
 * pdu_mdi2.c
-* ISO 22900-2 D-PDU API shim — GM MDI 2 / SM2 Pro / Tech2Win
+* ISO 22900-2 D-PDU API shim ï¿½ GM MDI 2 / SM2 Pro / Tech2Win
 *
 * Data flow:
 *   Tech2Win
@@ -168,7 +168,7 @@ static void logmsg(const char *fmt, ...)
 #define PDU_IOCTL_CLEAR_TX_PENDING      18UL
 
 /* =========================================================================
-* J2534 types (minimal — enough for smj2534.dll)
+* J2534 types (minimal ï¿½ enough for smj2534.dll)
 * ====================================================================== */
 #define J2534_J1850VPW                  0x01UL
 #define J2534_PASS_FILTER               0x01UL
@@ -379,6 +379,12 @@ typedef struct {
 	PDU_MODULE_DATA *pModuleData;
 } PDU_MODULE_ITEM;
 
+typedef struct {
+	T_PDU_IT         ItemType;
+	UNUM32           NumEntries;
+	PDU_DEVICE_DATA *pDeviceData;
+} PDU_DEVICE_ITEM;
+
 /* Flag data */
 typedef struct {
 	UNUM32  NumFlagBytes;
@@ -543,9 +549,9 @@ typedef struct {
 } PDU_RESULT_DATA;
 
 typedef struct PDU_EVENT_ITEM {
-	T_PDU_IT      ItemType;       // offset 0  — ItemType value goes here
-	T_PDU_UINT32  hCoPrimitive;   // offset 4  — spec calls this hCop
-	void         *pCoPTag;        // offset 8  — NULL for us
+	T_PDU_IT      ItemType;       // offset 0  ï¿½ ItemType value goes here
+	T_PDU_UINT32  hCoPrimitive;   // offset 4  ï¿½ spec calls this hCop
+	void         *pCoPTag;        // offset 8  ï¿½ NULL for us
 	T_PDU_UINT32  Timestamp;      // offset 12
 	void         *pData;          // offset 16
 } PDU_EVENT_ITEM;
@@ -563,7 +569,7 @@ typedef void (PDU_CALL *T_PDU_CALLBACK)(T_PDU_UINT32 ItemType,
 	void *pAPITag);
 
 /* =========================================================================
-* Event queue — lock-free ring buffer of PDU_EVENT_ITEM*
+* Event queue ï¿½ lock-free ring buffer of PDU_EVENT_ITEM*
 * ====================================================================== */
 #define EVT_QUEUE_SIZE  128     /* must be power of 2 */
 #define EVT_QUEUE_MASK  (EVT_QUEUE_SIZE - 1)
@@ -572,7 +578,7 @@ typedef struct {
 	PDU_EVENT_ITEM * volatile slots[EVT_QUEUE_SIZE];
 	volatile LONG head;         /* consumer reads here */
 	volatile LONG tail;         /* producer writes here */
-	CRITICAL_SECTION lock;      /* simple mutex — good enough at this rate */
+	CRITICAL_SECTION lock;      /* simple mutex ï¿½ good enough at this rate */
 } EventQueue;
 
 static void evq_init(EventQueue *q) {
@@ -644,7 +650,7 @@ typedef struct {
 
 	T_PDU_UINT32  CllState;
 
-	CRITICAL_SECTION  uridLock;          // ADD — protects URID table writes
+	CRITICAL_SECTION  uridLock;          // ADD ï¿½ protects URID table writes
 
 	PDU_UNIQUE_RESP_ID_TABLE_ITEM *pWorkingURID;
 	VPW_URID_TABLE ActiveURID;
@@ -757,7 +763,7 @@ static const T_PDU_UINT32 RUNTIME_ResourceID = 1;
 static const T_PDU_UINT32 RUNTIME_ComLogicalLinkID = 1;
 
 /* =========================================================================
-* Resource table — verbatim from MDI2.mdi
+* Resource table ï¿½ verbatim from MDI2.mdi
 * ====================================================================== */
 static const struct {
 	T_PDU_UINT32 ResourceId;
@@ -933,7 +939,13 @@ static void Cll_SyncURID(PDU_CONN_STATE *c)
 			if (!cp || !cp->pComParamData)
 				continue;
 
-			UNUM32 val = *(UNUM32*)cp->pComParamData;
+			UNUM32 val = 0;
+			if (cp->ComParamDataType == PDU_PT_UNUM8 || cp->ComParamDataType == PDU_PT_SNUM8)
+				val = *(UNUM8*)cp->pComParamData;
+			else if (cp->ComParamDataType == PDU_PT_UNUM16 || cp->ComParamDataType == PDU_PT_SNUM16)
+				val = *(uint16_t*)cp->pComParamData;
+			else
+				val = *(UNUM32*)cp->pComParamData;
 
 			switch (cp->ComParamId) {
 			case CP_EcuRespSourceAddress:
@@ -1380,12 +1392,12 @@ static int LoadJ2534(void)
 	char *slash = strrchr(jpath, '\\');
 
 	if (slash) {
-		LOG1("Slash found at offset %ld — replacing filename with smj2534.dll",
+		LOG1("Slash found at offset %ld ï¿½ replacing filename with smj2534.dll",
 			(long)(slash - jpath));
 		strcpy_s(slash + 1, MAX_PATH - (slash - jpath) - 1, "smj2534.dll");
 	}
 	else {
-		LOG0("No slash found — using smj2534.dll in current directory");
+		LOG0("No slash found ï¿½ using smj2534.dll in current directory");
 		strcpy_s(jpath, MAX_PATH, "smj2534.dll");
 	}
 
@@ -1406,7 +1418,7 @@ static int LoadJ2534(void)
         g.field = (type)GetProcAddress(g.hJ2534Dll, name); \
         LOG1("GetProcAddress(%s) returned %p", name, g.field); \
         if (!g.field) { \
-            LOG1("GetProcAddress(%s) FAILED — unloading DLL", name); \
+            LOG1("GetProcAddress(%s) FAILED ï¿½ unloading DLL", name); \
             FreeLibrary(g.hJ2534Dll); \
             g.hJ2534Dll = NULL; \
             return 0; \
@@ -1425,7 +1437,7 @@ static int LoadJ2534(void)
 	GP("PassThruGetLastError", FN_PassThruGetLastError, pfGetLastError);
 
 #undef GP
-	LOG0("All J2534 exports resolved — calling PassThruOpen");
+	LOG0("All J2534 exports resolved ï¿½ calling PassThruOpen");
 
 	unsigned long devId = 0;
 	long r = -1;
@@ -1456,7 +1468,7 @@ static int LoadJ2534(void)
 	}
 
 	if (r != J2534_STATUS_NOERROR) {
-		LOG0("PassThruOpen FAILED — unloading J2534 DLL");
+		LOG0("PassThruOpen FAILED ï¿½ unloading J2534 DLL");
 		FreeLibrary(g.hJ2534Dll);
 		g.hJ2534Dll = NULL;
 		return 0;
@@ -1465,7 +1477,7 @@ static int LoadJ2534(void)
 	g.J2534DeviceID = devId;
 	g.DeviceOpen = 1;
 
-	LOG0("SUCCESS — J2534 device opened");
+	LOG0("SUCCESS ï¿½ J2534 device opened");
 	return 1;
 }
 /* =========================================================================
@@ -1513,7 +1525,7 @@ static int AllocConn(T_PDU_UINT32 *phConn)
 		}
 	}
 
-	LOG0("FAILED — no free connection slots");
+	LOG0("FAILED ï¿½ no free connection slots");
 	return 0;
 }
 
@@ -1622,7 +1634,7 @@ static int RegisterDll(void)
 	return 1;
 }
 
-static int UnregisterDll(void)   // <—— ADD THIS HERE
+static int UnregisterDll(void)   // <ï¿½ï¿½ ADD THIS HERE
 {
 	LOG0("ENTER");
 
@@ -1667,7 +1679,7 @@ BOOL WINAPI DllMain(HINSTANCE hInst, DWORD reason, LPVOID reserved)
 }
 
 /* =========================================================================
-* Registration entry points — call once from an installer / elevated cmd:
+* Registration entry points ï¿½ call once from an installer / elevated cmd:
 *   rundll32 pdu_mdi2.dll,DllRegisterServer
 *   rundll32 pdu_mdi2.dll,DllUnregisterServer
 * ====================================================================== */
@@ -1682,7 +1694,7 @@ HRESULT __stdcall DllUnregisterServer(void)
 }
 
 /* =========================================================================
-* Ready notification thread — fires callback 500ms after construct
+* Ready notification thread ï¿½ fires callback 500ms after construct
 * ====================================================================== */
 static unsigned __stdcall ReadyThreadProc(void *arg)
 {
@@ -1691,7 +1703,7 @@ static unsigned __stdcall ReadyThreadProc(void *arg)
 	return 0;
 }
 /* =========================================================================
-* PDUConstruct — initialize, load MDI, load smj2534.dll
+* PDUConstruct ï¿½ initialize, load MDI, load smj2534.dll
 * ====================================================================== */
 PDU_API T_PDU_UINT32 PDU_CALL PDUConstruct(const char *OptionStr, void *pAPITag)
 {
@@ -1702,7 +1714,7 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUConstruct(const char *OptionStr, void *pAPITag)
 	LOG0("PDUConstruct: Entered GlobalLock");
 
 	if (g.Constructed) {
-		LOG0("PDUConstruct: Already constructed — returning OK");
+		LOG0("PDUConstruct: Already constructed ï¿½ returning OK");
 		LeaveCriticalSection(&g.GlobalLock);
 		return PDU_STATUS_NOERROR;
 	}
@@ -1739,7 +1751,7 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUConstruct(const char *OptionStr, void *pAPITag)
 			"MDI2.mdi");
 	}
 	else {
-		LOG0("PDUConstruct: No slash found — using default MDI2.mdi");
+		LOG0("PDUConstruct: No slash found ï¿½ using default MDI2.mdi");
 		strcpy_s(g.MdiPath, MAX_PATH, "MDI2.mdi");
 	}
 
@@ -1748,7 +1760,7 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUConstruct(const char *OptionStr, void *pAPITag)
 	LOG0("PDUConstruct: Checking if MDF/MDI file exists");
 	FILE *f = fopen(g.MdiPath, "r");
 	if (!f) {
-		LOG1("PDUConstruct: ERROR — MDF/MDI not found at %s", g.MdiPath);
+		LOG1("PDUConstruct: ERROR ï¿½ MDF/MDI not found at %s", g.MdiPath);
 		LeaveCriticalSection(&g.GlobalLock);
 		return PDU_ERR_FCT_FAILED;
 	}
@@ -1876,7 +1888,7 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUDestruct(void)
             LOG0("Destroying event queue");
             evq_destroy(&c->EvtQ);
 
-            // ADD — URID cleanup before slot is wiped:
+            // ADD ï¿½ URID cleanup before slot is wiped:
             if (c->pWorkingURID) {
                 FreeWorkingURID(c->pWorkingURID);
                 c->pWorkingURID = NULL;
@@ -1908,7 +1920,7 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUDestruct(void)
     InitializeCriticalSection(&g.GlobalLock);
     LOG0("Reinitialized GlobalLock");
 
-    // ADD — re-init per-connection locks after memset wipes them:
+    // ADD ï¿½ re-init per-connection locks after memset wipes them:
     for (int i = 0; i < MAX_CONNECTIONS; i++) {
         InitializeCriticalSection(&g.Connections[i].uridLock);
         g.Connections[i].pWorkingURID = NULL;
@@ -1929,12 +1941,12 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUGetVersion(
 	LOG1("ENTER hMod=%u pVer=%p", hMod, pVer);
 
 	if (!g.Constructed) {
-		LOG0("ERROR — API not constructed");
+		LOG0("ERROR ï¿½ API not constructed");
 		return PDU_ERR_PDUAPI_NOT_CONSTRUCTED;
 	}
 
 	if (!pVer) {
-		LOG0("ERROR — pVer is NULL");
+		LOG0("ERROR ï¿½ pVer is NULL");
 		return PDU_ERR_INVALID_PARAMETERS;
 	}
 
@@ -1947,13 +1959,13 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUGetVersion(
 
 	LOG0("Filling hardware info");
 	pVer->HwSerialNumber = 22124708;
-	strncpy(pVer->HwName, "MDI", sizeof(pVer->HwName) - 1);
-	pVer->HwVersion = 65536;
+	strncpy(pVer->HwName, "MDI2", sizeof(pVer->HwName) - 1);
+	pVer->HwVersion = 0x00020000;
 	pVer->HwDate = 637603840;
 	pVer->HwInterface = 1;
 
 	LOG0("Filling firmware info");
-	strncpy(pVer->FwName, "MDI", sizeof(pVer->FwName) - 1);
+	strncpy(pVer->FwName, "MDI2", sizeof(pVer->FwName) - 1);
 	pVer->FwVersion = 134440821;
 	pVer->FwDate = 788925952;
 
@@ -1970,7 +1982,7 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUGetVersion(
 }
 
 /* =========================================================================
-* PDUGetModuleIds — module type 28
+* PDUGetModuleIds ï¿½ module type 28
 * ====================================================================== */
 
 PDU_API T_PDU_UINT32 PDU_CALL PDUGetModuleIds(PDU_MODULE_ITEM **pModuleIdList)
@@ -2011,7 +2023,7 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUGetModuleIds(PDU_MODULE_ITEM **pModuleIdList)
 	return PDU_STATUS_NOERROR;
 }
 /* =========================================================================
-* PDUGetResourceIds — Bosch-style, 2 parameters
+* PDUGetResourceIds ï¿½ Bosch-style, 2 parameters
 * ====================================================================== */
 PDU_API T_PDU_UINT32 PDU_CALL PDUGetResourceIds(
 	T_PDU_UINT32  hMod,
@@ -2093,7 +2105,7 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUOpenResource(T_PDU_UINT32  hMod,
 }
 
 /* =========================================================================
-* PDUModuleConnect — PassThruOpen to SM2
+* PDUModuleConnect ï¿½ PassThruOpen to SM2
 * ====================================================================== */
 PDU_API T_PDU_UINT32 PDU_CALL PDUModuleConnect(T_PDU_UINT32 hMod)
 {
@@ -2115,12 +2127,12 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUModuleDisconnect(T_PDU_UINT32 hMod)
 	UNUSED(hMod);
 	if (!g.Constructed) return PDU_ERR_PDUAPI_NOT_CONSTRUCTED;
 	g.DeviceOpen = 0;
-	// DO NOT call g.pfClose here — device stays open until PDUDestruct
+	// DO NOT call g.pfClose here ï¿½ device stays open until PDUDestruct
 	return PDU_STATUS_NOERROR;
 }
 
 /* =========================================================================
-* PDUGetObjectId – global Bosch-style catalog
+* PDUGetObjectId ï¿½ global Bosch-style catalog
 * ========================================================================= */
 PDU_API T_PDU_UINT32 PDU_CALL PDUGetObjectId(
 	T_PDU_UINT32  type,
@@ -2279,7 +2291,7 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUGetObjectId(
 			{ "CP_ByteCountOffset",          164 },
 			{ "CP_MessageScheduler",         165 },
 
-			/* Extra ones Tech2Win probes – stub IDs */
+			/* Extra ones Tech2Win probes ï¿½ stub IDs */
 			{ "CP_5BaudAddressPhys",         0x3001 },
 			{ "CP_5BaudMode",                0x3002 },
 			{ "CP_As",                       0x3003 },
@@ -2331,7 +2343,7 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUGetObjectId(
 		}
 
 		if (*pId == PDU_ID_UNDEF)
-			*pId = 0x3FFF;   /* generic “supported” placeholder */
+			*pId = 0x3FFF;   /* generic ï¿½supportedï¿½ placeholder */
 
 		break;
 	}
@@ -2400,7 +2412,7 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUGetObjectId(
 }
 
 /* =========================================================================
-* PDUSetComParam – accept everything, store basic UINT32 values
+* PDUSetComParam ï¿½ accept everything, store basic UINT32 values
 * ========================================================================= */
 PDU_API T_PDU_UINT32 PDU_CALL PDUSetComParam(
 	T_PDU_UINT32   hMod,
@@ -2434,7 +2446,7 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUSetComParam(
 }
 
 /* =========================================================================
-* PDUGetComParam – return stored values or sane defaults
+* PDUGetComParam ï¿½ return stored values or sane defaults
 * ========================================================================= */
 PDU_API T_PDU_UINT32 PDU_CALL PDUGetComParam(
     T_PDU_UINT32    hMod,
@@ -2485,7 +2497,7 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUGetComParam(
 }
 
 /* =========================================================================
-* PDUCreateComLogicalLink — PassThruConnect J1850VPW @ 10400 baud
+* PDUCreateComLogicalLink ï¿½ PassThruConnect J1850VPW @ 10400 baud
 * ====================================================================== */
 PDU_API T_PDU_UINT32 PDU_CALL PDUCreateComLogicalLink(
 	T_PDU_UINT32   hMod,
@@ -2968,15 +2980,7 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUSetUniqueRespIdTable(
                 goto fail;
 
             for (UNUM32 p = 0; p < dst->NumParamItems; p++) {
-                dst->pParams[p] = src->pParams[p];
-
-                if (src->pParams[p].pComParamData) {
-                    UNUM32 *val = (UNUM32*)calloc(1, sizeof(UNUM32));
-                    if (!val)
-                        goto fail;
-                    *val = *(UNUM32*)src->pParams[p].pComParamData;
-                    dst->pParams[p].pComParamData = val;
-                }
+                DeepCopyParam(&dst->pParams[p], &src->pParams[p]);
             }
         }
     }
@@ -2991,7 +2995,7 @@ fail:
 
 #if 0
 /* =========================================================================
-* PDUSendReceive — minimal working implementation
+* PDUSendReceive ï¿½ minimal working implementation
 * ====================================================================== */
 PDU_API T_PDU_UINT32 PDU_CALL PDUSendReceive(
 	T_PDU_UINT32 hMod,
@@ -3151,7 +3155,7 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUSendReceive(
 #endif
 
 /* =========================================================================
-* PDUGetEventItems — drain entire queue into linked list
+* PDUGetEventItems ï¿½ drain entire queue into linked list
 * ====================================================================== */
 PDU_API T_PDU_UINT32 PDU_CALL PDUGetEventItems(void)
 {
@@ -3181,7 +3185,7 @@ PDU_API T_PDU_UINT32 PDU_CALL PDURegisterEventCallback(
 
 
 /* =========================================================================
-* PDUIoCtl — maps PDU IoCtl IDs 1-18 to J2534 ioctl calls
+* PDUIoCtl ï¿½ maps PDU IoCtl IDs 1-18 to J2534 ioctl calls
 * ====================================================================== */
 T_PDU_UINT32 PDU_CALL PDUIoCtl(
 	T_PDU_UINT32  hMod,
@@ -3514,7 +3518,7 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUGetStatus(T_PDU_UINT32 hMod,
 			if (c && c->LastCoPrimHandle == hCoPrimitive) {
 				DWORD elapsed = GetTickCount() - c->LastCoPrimTime;
 				if (elapsed > 150) {
-					// Timed out — push finished event and report done
+					// Timed out ï¿½ push finished event and report done
 					PDU_EVENT_ITEM *evFin = (PDU_EVENT_ITEM*)calloc(1, sizeof(PDU_EVENT_ITEM));
 					T_PDU_UINT32 *pStat = (T_PDU_UINT32*)calloc(1, sizeof(T_PDU_UINT32));
 					*pStat = PDU_COPST_FINISHED;  // PDU_COPST_FINISHED
@@ -3538,7 +3542,7 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUGetStatus(T_PDU_UINT32 hMod,
 }
 
 /* =========================================================================
-* PDUDestroyItem / PDUDestroyItems — free memory returned to Tech2Win
+* PDUDestroyItem / PDUDestroyItems ï¿½ free memory returned to Tech2Win
 * ====================================================================== */
 PDU_API T_PDU_UINT32 PDU_CALL PDUDestroyItem(PDU_ITEM *p)
 {
@@ -3707,6 +3711,51 @@ PDU_API T_PDU_ERROR PDU_CALL PDUGetUniqueRespIdTable(
 PDU_API T_PDU_UINT32 PDU_CALL PDUDestroyItems(void)
 {
 
+	return PDU_STATUS_NOERROR;
+}
+
+/* =========================================================================
+* PDUGetDeviceIds
+* ====================================================================== */
+PDU_API T_PDU_UINT32 PDU_CALL PDUGetDeviceIds(
+	T_PDU_UINT32   hMod,
+	PDU_DEVICE_ITEM **pDeviceIdList)
+{
+	logmsg("PDUGetDeviceIds: ENTER hMod=%u", hMod);
+
+	if (!pDeviceIdList) return PDU_ERR_INVALID_PARAMETERS;
+
+	PDU_DEVICE_ITEM *item = (PDU_DEVICE_ITEM*)calloc(1, sizeof(PDU_DEVICE_ITEM));
+	if (!item) return PDU_ERR_FAILED;
+
+	PDU_DEVICE_DATA *devs = (PDU_DEVICE_DATA*)calloc(1, sizeof(PDU_DEVICE_DATA));
+	if (!devs) { free(item); return PDU_ERR_FAILED; }
+
+	item->ItemType = (T_PDU_IT)0x1800;
+	item->NumEntries = 1;
+	item->pDeviceData = devs;
+
+	devs[0].hMod = 1;
+	devs[0].hDev = 1;
+	devs[0].DeviceStatus = PDU_DEVST_AVAIL;
+
+	*pDeviceIdList = item;
+	logmsg("PDUGetDeviceIds: EXIT OK (1 device, id=1)");
+	return PDU_STATUS_NOERROR;
+}
+
+/* =========================================================================
+* PDUOpenDevice
+* ====================================================================== */
+PDU_API T_PDU_UINT32 PDU_CALL PDUOpenDevice(T_PDU_UINT32 hMod, T_PDU_UINT32 hDev, T_PDU_UINT32 *phDev)
+{
+	logmsg("PDUOpenDevice: CALLED hMod=%u hDev=%u", hMod, hDev);
+	if (!g.Constructed) return PDU_ERR_PDUAPI_NOT_CONSTRUCTED;
+	if (!phDev) return PDU_ERR_INVALID_PARAMETERS;
+
+	if (hDev != 1) return PDU_ERR_INVALID_HANDLE;
+
+	*phDev = 1;
 	return PDU_STATUS_NOERROR;
 }
 
