@@ -1146,8 +1146,7 @@ static unsigned __stdcall RxThreadProc(void *pArg)
 						// Not our response, and a primitive is active -> drop
 						continue;
 					}
-					// Optional: further filter by target (msg->Data[1] == Tech2Win's addr)
-					// but for now, 3-byte minimum ensures it's a valid frame
+					logmsg("RxThread: ACCEPT header=0x%02X expected=0x%02X", msg->Data[0], c->ExpectedResponseId);
 					c->LastCoPrimTime = GetTickCount();
 				}
 				else {
@@ -1162,6 +1161,12 @@ static unsigned __stdcall RxThreadProc(void *pArg)
 				if (!Cll_ResultAllowed(c, msg)) {
 					continue;
 				}
+
+				logmsg("RxThread: frame header %02X %02X %02X size=%lu", 
+					msg->DataSize > 0 ? msg->Data[0] : 0,
+					msg->DataSize > 1 ? msg->Data[1] : 0,
+					msg->DataSize > 2 ? msg->Data[2] : 0,
+					msg->DataSize);
 
 				// 4. URID Matching & Result Building
 				PDU_RESULT_DATA *res = (PDU_RESULT_DATA *)calloc(1, sizeof(PDU_RESULT_DATA));
@@ -1191,11 +1196,14 @@ static unsigned __stdcall RxThreadProc(void *pArg)
 							msg->Data[1] == e->ExpectedTargetAddr &&
 							msg->Data[2] == e->ExpectedSrcAddr) {
 							res->UniqueRespIdentifier = e->UniqueRespIdentifier;
+							logmsg("RxThread: URID match [%u] id=0x%08X", i, res->UniqueRespIdentifier);
 							break;
 						}
 					}
 					// If URID table exists but no match, drop it
 					if (res->UniqueRespIdentifier == PDU_ID_UNDEF) {
+						logmsg("RxThread: no URID match for %02X-%02X-%02X, dropping", 
+							msg->Data[0], msg->Data[1], msg->Data[2]);
 						if (res->pDataBytes) free(res->pDataBytes);
 						free(res);
 						continue;
@@ -1224,16 +1232,19 @@ static unsigned __stdcall RxThreadProc(void *pArg)
 				ev->pData = res;
 
 				if (!evq_push(&c->EvtQ, ev)) {
+					logmsg("RxThread: queue FULL, dropping event");
 					if (res->TimestampFlags.pFlagData) free(res->TimestampFlags.pFlagData);
 					if (res->pDataBytes) free(res->pDataBytes);
 					free(res);
 					free(ev);
 				}
 				else {
+					logmsg("RxThread: pushed RESULT ev=%p hCoPrim=%lu", ev, ev->hCoPrimitive);
 					// Handle Primitive Completion
 					if (c->PrimitiveActive) {
 						c->ResultCount++;
 						if (c->ResultCount >= c->ExpectedResults) {
+							logmsg("RxThread: primitive FINISHED after %d results", c->ResultCount);
 							T_PDU_UINT32 finishedHandle = c->LastCoPrimHandle;
 							PDU_EVENT_ITEM *evFin = (PDU_EVENT_ITEM *)calloc(1, sizeof(PDU_EVENT_ITEM));
 							T_PDU_UINT32 *pStatus = (T_PDU_UINT32 *)calloc(1, sizeof(T_PDU_UINT32));
@@ -2858,6 +2869,11 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUGetEventItem(T_PDU_UINT32 hMod,
 		*ppEventItem = ev;
 		logmsg("PDUGetEventItem: returning event type=0x%04lX hConn=%u",
 			ev->ItemType, hConn);
+		if (ev->ItemType == PDU_IT_RESULT) {
+			PDU_RESULT_DATA *r = (PDU_RESULT_DATA*)ev->pData;
+			logmsg("PDUGetEventItem:   Result ID=0x%08X Size=%u", 
+				r ? r->UniqueRespIdentifier : 0, r ? r->NumDataBytes : 0);
+		}
 		return PDU_STATUS_NOERROR;
 	}
 
@@ -2909,6 +2925,8 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUSetUniqueRespIdTable(
         dst->UniqueRespIdentifier = src->UniqueRespIdentifier;
         dst->NumParamItems = src->NumParamItems;
 
+        logmsg("PDUSetUniqueRespIdTable: [%u] ID=0x%08X NumParams=%u", i, dst->UniqueRespIdentifier, dst->NumParamItems);
+
         if (dst->NumParamItems) {
             dst->pParams = (PDU_PARAM_ITEM*)calloc(dst->NumParamItems, sizeof(PDU_PARAM_ITEM));
             if (!dst->pParams)
@@ -2916,6 +2934,8 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUSetUniqueRespIdTable(
 
             for (UNUM32 p = 0; p < dst->NumParamItems; p++) {
                 DeepCopyParam(&dst->pParams[p], &src->pParams[p]);
+                logmsg("PDUSetUniqueRespIdTable:    Param[%u] ID=%u DataType=0x%X", 
+                    p, dst->pParams[p].ComParamId, dst->pParams[p].ComParamDataType);
             }
         }
     }
@@ -3206,6 +3226,7 @@ T_PDU_UINT32 PDU_CALL PDUIoCtl(
 	case PDU_IOCTL_READ_VBATT:
 	{
 		g.pfIoctl(g.J2534DeviceID, IOCTL_READ_VBATT, NULL, &sLong);
+		logmsg("PDUIoCtl: READ_VBATT returned %ld mV", sLong.Value);
 
 		if (ppOutputData) {
 			PDU_DATA_ITEM *item = (PDU_DATA_ITEM*)calloc(1, sizeof(PDU_DATA_ITEM));
@@ -3271,6 +3292,7 @@ T_PDU_UINT32 PDU_CALL PDUIoCtl(
 
 	case PDU_IOCTL_READ_IGNITION_SENSE:
 	{
+		logmsg("PDUIoCtl: READ_IGNITION_SENSE returning 1 (ON)");
 		if (ppOutputData) {
 			PDU_DATA_ITEM *item = (PDU_DATA_ITEM*)calloc(1, sizeof(PDU_DATA_ITEM));
 			T_PDU_UINT32  *v    = (T_PDU_UINT32*)malloc(sizeof(T_PDU_UINT32));
@@ -3420,17 +3442,50 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUGetStatus(T_PDU_UINT32 hMod,
 	T_PDU_UINT32 param5,
 	T_PDU_UINT32 param6)
 {
-	logmsg("PDUGetStatus: CALLED hMod=%lu hConn=%lu hCoPrimitive=%lu pStatus=%p",
-		hMod, hConn, hCoPrimitive, pStatus);
+	logmsg("PDUGetStatus: CALLED hMod=%lu hConn=%lu hCoPrimitive=%lu",
+		hMod, hConn, hCoPrimitive);
 
-	UNUSED(hMod);
-	UNUSED(hConn);
-	UNUSED(hCoPrimitive);
-	UNUSED(pStatus);
-	UNUSED(param5);
-	UNUSED(param6);
+	UNUSED(hMod); UNUSED(param5); UNUSED(param6);
 
-	if (pStatus) {
+	if (!g.Constructed) return PDU_ERR_PDUAPI_NOT_CONSTRUCTED;
+	if (!pStatus) return PDU_ERR_INVALID_PARAMETERS;
+
+	if (hCoPrimitive == PDU_HANDLE_UNDEF || hCoPrimitive == 0xFFFFFFFF) {
+		PDU_CONN_STATE *c = GetConn(hConn);
+		if (c) {
+			*pStatus = PDU_CLLST_COMM_STARTED;
+		}
+		else {
+			*pStatus = PDU_CLLST_OFFLINE;
+		}
+	}
+	else {
+		PDU_CONN_STATE *c = GetConn(hConn);
+		if (c && c->LastCoPrimHandle == hCoPrimitive) {
+			if (c->PrimitiveActive) {
+				if (GetTickCount() - c->LastCoPrimTime > 250) {
+					logmsg("PDUGetStatus: primitive %lu timeout, forcing FINISHED", hCoPrimitive);
+					c->PrimitiveActive = 0;
+					*pStatus = PDU_COPST_FINISHED;
+				}
+				else {
+					*pStatus = PDU_COPST_EXECUTING;
+				}
+			}
+			else {
+				*pStatus = PDU_COPST_FINISHED;
+			}
+		}
+		else {
+			*pStatus = PDU_COPST_FINISHED;
+		}
+	}
+
+	logmsg("PDUGetStatus: EXIT status=0x%04X", *pStatus);
+	return PDU_STATUS_NOERROR;
+}
+
+/* =========================================================================
 		if (hCoPrimitive == PDU_HANDLE_UNDEF || hCoPrimitive == 0xFFFFFFFF) {
 			*pStatus = 0x8052;  // PDU_CLLST_COMM_STARTED
 		}
@@ -3484,11 +3539,6 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUDestroyItem(PDU_ITEM *p)
 	else if (p->ItemType == PDU_IT_STATUS) {
 		PDU_EVENT_ITEM *ev = (PDU_EVENT_ITEM*)p;
 		if (ev->pData) free(ev->pData);
-		free(p);
-	}
-	else if (p->ItemType == PDU_IT_IO_UNUM32) {
-		PDU_DATA_ITEM *di = (PDU_DATA_ITEM*)p;
-		if (di->pData) free(di->pData);
 		free(p);
 	}
 	else if (p->ItemType == PDU_IT_IO_UNUM32) {
