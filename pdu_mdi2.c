@@ -1142,10 +1142,12 @@ static unsigned __stdcall RxThreadProc(void *pArg)
 
 				// 1. Primitive Gating
 				if (c->ExpectedResponseId != 0) {
-					if (msg->DataSize == 0 || msg->Data[0] != c->ExpectedResponseId) {
+					if (msg->DataSize < 3 || msg->Data[0] != c->ExpectedResponseId) {
 						// Not our response, and a primitive is active -> drop
 						continue;
 					}
+					// Optional: further filter by target (msg->Data[1] == Tech2Win's addr)
+					// but for now, 3-byte minimum ensures it's a valid frame
 					c->LastCoPrimTime = GetTickCount();
 				}
 				else {
@@ -1218,7 +1220,7 @@ static unsigned __stdcall RxThreadProc(void *pArg)
 
 				ev->ItemType = PDU_IT_RESULT;
 				ev->hCoPrimitive = c->LastCoPrimHandle;
-				ev->Timestamp = msg->Timestamp ? msg->Timestamp : GetTickCount();
+				ev->Timestamp = (T_PDU_TIMESTAMP)pc.QuadPart;
 				ev->pData = res;
 
 				if (!evq_push(&c->EvtQ, ev)) {
@@ -1252,12 +1254,12 @@ static unsigned __stdcall RxThreadProc(void *pArg)
 				}
 			}
 		}
-		else if (ret == J2534_ERR_BUFFER_EMPTY) {
-			Sleep(2);
+		else if (ret == J2534_ERR_BUFFER_EMPTY || (ret == J2534_STATUS_NOERROR && numMsgs == 0)) {
+			Sleep(5);
 		}
 		else {
 			logmsg("RxThread: pfReadMsgs error %ld", ret);
-			Sleep(10);
+			Sleep(20);
 		}
 	}
 
@@ -3108,10 +3110,7 @@ PDU_API T_PDU_UINT32 PDU_CALL PDURegisterEventCallback(
 	logmsg("PDURegisterEventCallback: hMod=%u hCLL=%u cb=%p",
 		hMod, hCLL, cb);
 
-	/* For now we ignore hMod/hCLL and just store the function pointer.
-	If you want to be fancy later, you can track per-module/CLL callbacks. */
 	g.EventCallback = cb;
-	g.pCallbackUserData = NULL;   /* could store pAPITag from PDUConstruct if desired */
 
 	return PDU_STATUS_NOERROR;
 }
@@ -3209,24 +3208,18 @@ T_PDU_UINT32 PDU_CALL PDUIoCtl(
 		g.pfIoctl(g.J2534DeviceID, IOCTL_READ_VBATT, NULL, &sLong);
 
 		if (ppOutputData) {
-			PDU_DATA_ITEM         *item = (PDU_DATA_ITEM*)calloc(1, sizeof(PDU_DATA_ITEM));
-			PDU_IO_BYTEARRAY_DATA *ba = (PDU_IO_BYTEARRAY_DATA*)calloc(1, sizeof(PDU_IO_BYTEARRAY_DATA));
-			T_PDU_UINT32          *v = (T_PDU_UINT32*)malloc(sizeof(T_PDU_UINT32));
+			PDU_DATA_ITEM *item = (PDU_DATA_ITEM*)calloc(1, sizeof(PDU_DATA_ITEM));
+			T_PDU_UINT32  *v    = (T_PDU_UINT32*)malloc(sizeof(T_PDU_UINT32));
 
-			if (!item || !ba || !v) {
-				free(item);
-				free(ba);
-				free(v);
+			if (!item || !v) {
+				if(item) free(item);
+				if(v) free(v);
 				return PDU_ERR_FCT_FAILED;
 			}
 
 			*v = (T_PDU_UINT32)sLong.Value;
-
-			ba->DataSize = sizeof(T_PDU_UINT32);
-			ba->pData = (UNUM8*)v;
-
-			item->ItemType = PDU_IT_IO_BYTEARRAY;
-			item->pData = ba;
+			item->ItemType = PDU_IT_IO_UNUM32;
+			item->pData = v;
 
 			*ppOutputData = item;
 		}
@@ -3239,24 +3232,18 @@ T_PDU_UINT32 PDU_CALL PDUIoCtl(
 		g.pfIoctl(g.J2534DeviceID, IOCTL_READ_PROG_VOLTAGE, NULL, &sLong);
 
 		if (ppOutputData) {
-			PDU_DATA_ITEM         *item = (PDU_DATA_ITEM*)calloc(1, sizeof(PDU_DATA_ITEM));
-			PDU_IO_BYTEARRAY_DATA *ba = (PDU_IO_BYTEARRAY_DATA*)calloc(1, sizeof(PDU_IO_BYTEARRAY_DATA));
-			T_PDU_UINT32          *v = (T_PDU_UINT32*)malloc(sizeof(T_PDU_UINT32));
+			PDU_DATA_ITEM *item = (PDU_DATA_ITEM*)calloc(1, sizeof(PDU_DATA_ITEM));
+			T_PDU_UINT32  *v    = (T_PDU_UINT32*)malloc(sizeof(T_PDU_UINT32));
 
-			if (!item || !ba || !v) {
-				free(item);
-				free(ba);
-				free(v);
+			if (!item || !v) {
+				if(item) free(item);
+				if(v) free(v);
 				return PDU_ERR_FCT_FAILED;
 			}
 
 			*v = (T_PDU_UINT32)sLong.Value;
-
-			ba->DataSize = sizeof(T_PDU_UINT32);
-			ba->pData = (UNUM8*)v;
-
-			item->ItemType = PDU_IT_IO_BYTEARRAY;
-			item->pData = ba;
+			item->ItemType = PDU_IT_IO_UNUM32;
+			item->pData = v;
 
 			*ppOutputData = item;
 		}
@@ -3266,14 +3253,17 @@ T_PDU_UINT32 PDU_CALL PDUIoCtl(
 
 	case PDU_IOCTL_SET_PROG_VOLTAGE:
 	{
-		if (pInputData && pInputData->ItemType == PDU_IT_IO_BYTEARRAY && pInputData->pData) {
-			PDU_IO_BYTEARRAY_DATA *ba = (PDU_IO_BYTEARRAY_DATA*)pInputData->pData;
-			if (ba->pData && ba->DataSize >= sizeof(long)) {
-				long val = 0;
-				memcpy(&val, ba->pData, sizeof(long));
-				sLong.Value = val;
-				g.pfIoctl(g.J2534DeviceID, IOCTL_SET_CONFIG, &sLong, NULL);
+		if (pInputData && pInputData->pData) {
+			long val = 0;
+			if (pInputData->ItemType == PDU_IT_IO_UNUM32)
+				val = *(T_PDU_UINT32*)pInputData->pData;
+			else if (pInputData->ItemType == PDU_IT_IO_BYTEARRAY) {
+				PDU_IO_BYTEARRAY_DATA *ba = (PDU_IO_BYTEARRAY_DATA*)pInputData->pData;
+				if (ba->pData && ba->DataSize >= sizeof(long))
+					memcpy(&val, ba->pData, sizeof(long));
 			}
+			sLong.Value = val;
+			g.pfIoctl(g.J2534DeviceID, IOCTL_SET_CONFIG, &sLong, NULL);
 		}
 		return PDU_STATUS_NOERROR;
 	}
@@ -3282,24 +3272,18 @@ T_PDU_UINT32 PDU_CALL PDUIoCtl(
 	case PDU_IOCTL_READ_IGNITION_SENSE:
 	{
 		if (ppOutputData) {
-			PDU_DATA_ITEM         *item = (PDU_DATA_ITEM*)calloc(1, sizeof(PDU_DATA_ITEM));
-			PDU_IO_BYTEARRAY_DATA *ba = (PDU_IO_BYTEARRAY_DATA*)calloc(1, sizeof(PDU_IO_BYTEARRAY_DATA));
-			T_PDU_UINT32          *v = (T_PDU_UINT32*)malloc(sizeof(T_PDU_UINT32));
+			PDU_DATA_ITEM *item = (PDU_DATA_ITEM*)calloc(1, sizeof(PDU_DATA_ITEM));
+			T_PDU_UINT32  *v    = (T_PDU_UINT32*)malloc(sizeof(T_PDU_UINT32));
 
-			if (!item || !ba || !v) {
-				free(item);
-				free(ba);
-				free(v);
+			if (!item || !v) {
+				if(item) free(item);
+				if(v) free(v);
 				return PDU_ERR_FCT_FAILED;
 			}
 
 			*v = 1; /* Ignition ON */
-
-			ba->DataSize = sizeof(T_PDU_UINT32);
-			ba->pData = (UNUM8*)v;
-
-			item->ItemType = PDU_IT_IO_BYTEARRAY;
-			item->pData = ba;
+			item->ItemType = PDU_IT_IO_UNUM32;
+			item->pData = v;
 
 			*ppOutputData = item;
 		}
@@ -3310,24 +3294,18 @@ T_PDU_UINT32 PDU_CALL PDUIoCtl(
 	case PDU_IOCTL_GET_CABLE_ID:
 	{
 		if (ppOutputData) {
-			PDU_DATA_ITEM         *item = (PDU_DATA_ITEM*)calloc(1, sizeof(PDU_DATA_ITEM));
-			PDU_IO_BYTEARRAY_DATA *ba = (PDU_IO_BYTEARRAY_DATA*)calloc(1, sizeof(PDU_IO_BYTEARRAY_DATA));
-			T_PDU_UINT32          *v = (T_PDU_UINT32*)malloc(sizeof(T_PDU_UINT32));
+			PDU_DATA_ITEM *item = (PDU_DATA_ITEM*)calloc(1, sizeof(PDU_DATA_ITEM));
+			T_PDU_UINT32  *v    = (T_PDU_UINT32*)malloc(sizeof(T_PDU_UINT32));
 
-			if (!item || !ba || !v) {
-				free(item);
-				free(ba);
-				free(v);
+			if (!item || !v) {
+				if(item) free(item);
+				if(v) free(v);
 				return PDU_ERR_FCT_FAILED;
 			}
 
 			*v = (T_PDU_UINT32)g.J2534DeviceID;
-
-			ba->DataSize = sizeof(T_PDU_UINT32);
-			ba->pData = (UNUM8*)v;
-
-			item->ItemType = PDU_IT_IO_BYTEARRAY;
-			item->pData = ba;
+			item->ItemType = PDU_IT_IO_UNUM32;
+			item->pData = v;
 
 			*ppOutputData = item;
 		}
@@ -3364,7 +3342,7 @@ T_PDU_UINT32 PDU_CALL PDUIoCtl(
 				c->FilterActive = 1;
 				c->FilterOverrideByIoCtl = 0;
 			}
-			logmsg("PDUIoCtl: START_MSG_FILTER stored %u filters (software only)", list->NumFilterEntries);
+			logmsg("PDUIoCtl: START_MSG_FILTER stored %u filters", list->NumFilterEntries);
 			RebuildJ2534Filters(c); // sync hardware
 		}
 		return PDU_STATUS_NOERROR;
@@ -3426,7 +3404,9 @@ T_PDU_ERROR PDUGetTimestamp(T_PDU_UINT32 hMod, T_PDU_UINT32 *pTimestamp)
 	if (!pTimestamp)
 		return PDU_ERR_INVALID_PARAMETERS;
 
-	*pTimestamp = (T_PDU_UINT32)GetTickCount();
+	LARGE_INTEGER pc;
+	QueryPerformanceCounter(&pc);
+	*pTimestamp = (T_PDU_UINT32)pc.LowPart;
 	return PDU_STATUS_NOERROR;
 }
 
@@ -3496,6 +3476,7 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUDestroyItem(PDU_ITEM *p)
 		PDU_RESULT_DATA *r = (PDU_RESULT_DATA*)ev->pData;
 		if (r) {
 			if (r->pDataBytes) free(r->pDataBytes);
+			if (r->TimestampFlags.pFlagData) free(r->TimestampFlags.pFlagData);
 			free(r);
 		}
 		free(p);
@@ -3503,6 +3484,16 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUDestroyItem(PDU_ITEM *p)
 	else if (p->ItemType == PDU_IT_STATUS) {
 		PDU_EVENT_ITEM *ev = (PDU_EVENT_ITEM*)p;
 		if (ev->pData) free(ev->pData);
+		free(p);
+	}
+	else if (p->ItemType == PDU_IT_IO_UNUM32) {
+		PDU_DATA_ITEM *di = (PDU_DATA_ITEM*)p;
+		if (di->pData) free(di->pData);
+		free(p);
+	}
+	else if (p->ItemType == PDU_IT_IO_UNUM32) {
+		PDU_DATA_ITEM *di = (PDU_DATA_ITEM*)p;
+		if (di->pData) free(di->pData);
 		free(p);
 	}
 	else if (p->ItemType == PDU_IT_MODULE_ID) {
