@@ -173,7 +173,7 @@ static void logmsg(const char *fmt, ...)
 #define J2534_J1850VPW                  0x01UL
 #define J2534_PASS_FILTER               0x01UL
 #define J2534_STATUS_NOERROR            0x00L
-#define J2534_ERR_BUFFER_EMPTY          0x10L
+#define J2534_ERR_BUFFER_EMPTY          0x08L
 #define J2534_MAX_DATA_SIZE             4128
 
 /* J2534 IoCtl IDs */
@@ -564,9 +564,15 @@ typedef struct PDU_EVENT_ITEM {
 } PDU_EVENT_ITEM;
 
 typedef struct {
-	T_PDU_IT      ItemType;
-	UNUM32        NumEntries;
-	T_PDU_UINT32 *pResourceIdData;
+	T_PDU_UINT32 ResourceId;
+	T_PDU_UINT32 hMod;
+	T_PDU_UINT32 ResourceStatus;
+} PDU_RSC_ID_ENTRY;
+
+typedef struct {
+	T_PDU_IT          ItemType;
+	UNUM32            NumEntries;
+	PDU_RSC_ID_ENTRY *pResourceIdData;
 } PDU_RSC_ID_ITEM;
 
 #pragma pack(pop)
@@ -664,8 +670,9 @@ typedef struct {
 	volatile int  RxThreadRun;
 
 	T_PDU_UINT32  CllState;
+	T_PDU_UINT32  LastError;
 
-	CRITICAL_SECTION  uridLock;          // ADD � protects URID table writes
+	CRITICAL_SECTION  uridLock;          // ADD  protects URID table writes
 
 	PDU_UNIQUE_RESP_ID_TABLE_ITEM *pWorkingURID;
 	VPW_URID_TABLE ActiveURID;
@@ -1140,7 +1147,7 @@ static unsigned __stdcall RxThreadProc(void *pArg)
 					continue;
 				}
 
-				// 1. Primitive Gating
+				// 1. Primitive Gating vs Background URID
 				if (c->ExpectedResponseId != 0) {
 					if (msg->DataSize < 3 || msg->Data[0] != c->ExpectedResponseId) {
 						// Not our response, and a primitive is active -> drop
@@ -1150,25 +1157,44 @@ static unsigned __stdcall RxThreadProc(void *pArg)
 					c->LastCoPrimTime = GetTickCount();
 				}
 				else {
-					// 2. Unsolicited/Background Filtering
-					// If no URID table and no software filters, drop everything background chatter
-					if (c->ActiveURID.NumEntries == 0 && !c->FilterActive) {
+					// Background chatter: ONLY pass if it matches a URID
+					if (c->ActiveURID.NumEntries == 0) {
+						// No URID table yet, and not a primitive response -> DROP
 						continue;
 					}
 				}
 
-				// 3. Software Filtering (if active)
+				// 2. Software Filtering (if active)
 				if (!Cll_ResultAllowed(c, msg)) {
 					continue;
 				}
 
-				logmsg("RxThread: frame header %02X %02X %02X size=%lu", 
-					msg->DataSize > 0 ? msg->Data[0] : 0,
-					msg->DataSize > 1 ? msg->Data[1] : 0,
-					msg->DataSize > 2 ? msg->Data[2] : 0,
-					msg->DataSize);
+				// 3. Match URID
+				T_PDU_UINT32 matchedURID = PDU_ID_UNDEF;
+				if (msg->DataSize >= 3 && c->ActiveURID.NumEntries > 0) {
+					UNUM32 i;
+					for (i = 0; i < c->ActiveURID.NumEntries; i++) {
+						VPW_URID_ENTRY *e = &c->ActiveURID.pEntries[i];
+						if (e->IsCatchAll) {
+							matchedURID = e->UniqueRespIdentifier;
+							break;
+						}
+						if (msg->Data[0] == e->ExpectedHdrByte &&
+							msg->Data[1] == e->ExpectedTargetAddr &&
+							msg->Data[2] == e->ExpectedSrcAddr) {
+							matchedURID = e->UniqueRespIdentifier;
+							logmsg("RxThread: URID match [%u] id=0x%08X", i, matchedURID);
+							break;
+						}
+					}
+				}
 
-				// 4. URID Matching & Result Building
+				// 4. Final Drop Logic: If no primitive AND no URID match, drop it
+				if (c->ExpectedResponseId == 0 && matchedURID == PDU_ID_UNDEF) {
+					continue;
+				}
+
+				// 5. Build Result and Push
 				PDU_RESULT_DATA *res = (PDU_RESULT_DATA *)calloc(1, sizeof(PDU_RESULT_DATA));
 				if (!res) continue;
 
@@ -1181,36 +1207,8 @@ static unsigned __stdcall RxThreadProc(void *pArg)
 				}
 
 				if (msg->DataSize >= 2) res->AcceptanceId = msg->Data[1];
-				res->UniqueRespIdentifier = PDU_ID_UNDEF;
+				res->UniqueRespIdentifier = matchedURID;
 
-				// Match URID if table exists
-				if (msg->DataSize >= 3 && c->ActiveURID.NumEntries > 0) {
-					UNUM32 i;
-					for (i = 0; i < c->ActiveURID.NumEntries; i++) {
-						VPW_URID_ENTRY *e = &c->ActiveURID.pEntries[i];
-						if (e->IsCatchAll) {
-							res->UniqueRespIdentifier = e->UniqueRespIdentifier;
-							break;
-						}
-						if (msg->Data[0] == e->ExpectedHdrByte &&
-							msg->Data[1] == e->ExpectedTargetAddr &&
-							msg->Data[2] == e->ExpectedSrcAddr) {
-							res->UniqueRespIdentifier = e->UniqueRespIdentifier;
-							logmsg("RxThread: URID match [%u] id=0x%08X", i, res->UniqueRespIdentifier);
-							break;
-						}
-					}
-					// If URID table exists but no match, drop it
-					if (res->UniqueRespIdentifier == PDU_ID_UNDEF) {
-						logmsg("RxThread: no URID match for %02X-%02X-%02X, dropping", 
-							msg->Data[0], msg->Data[1], msg->Data[2]);
-						if (res->pDataBytes) free(res->pDataBytes);
-						free(res);
-						continue;
-					}
-				}
-
-				// 5. Build Event and Push
 				LARGE_INTEGER pc;
 				QueryPerformanceCounter(&pc);
 				res->TimestampFlags.NumFlagBytes = 4;
@@ -1239,9 +1237,10 @@ static unsigned __stdcall RxThreadProc(void *pArg)
 					free(ev);
 				}
 				else {
-					logmsg("RxThread: pushed RESULT ev=%p hCoPrim=%lu", ev, ev->hCoPrimitive);
+					logmsg("RxThread: pushed RESULT ev=%p hCoPrim=%lu URID=0x%08X", 
+						ev, ev->hCoPrimitive, matchedURID);
 					// Handle Primitive Completion
-					if (c->PrimitiveActive) {
+					if (c->PrimitiveActive && c->ExpectedResponseId != 0) {
 						c->ResultCount++;
 						if (c->ResultCount >= c->ExpectedResults) {
 							logmsg("RxThread: primitive FINISHED after %d results", c->ResultCount);
@@ -1954,7 +1953,7 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUGetModuleIds(PDU_MODULE_ITEM **pModuleIdList)
 PDU_API T_PDU_UINT32 PDU_CALL PDUGetResourceIds(
 	T_PDU_UINT32  hMod,
 	void         *pRscData,
-	T_PDU_UINT32 **ppList)
+	PDU_RSC_ID_ITEM **ppList)
 {
 	UNUSED(hMod); UNUSED(pRscData);
 
@@ -1966,21 +1965,33 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUGetResourceIds(
 	if (!ppList)
 		return PDU_ERR_INVALID_PARAMETERS;
 
-	/* Allocate list: [count, id0, id1, ..., PDU_ID_UNDEF] per ISO 22900-2 11.2.3.1 */
-	T_PDU_UINT32 *list = (T_PDU_UINT32*)malloc((NUM_RESOURCES + 2) * sizeof(T_PDU_UINT32));
-	if (!list) {
-		logmsg("PDUGetResourceIds: malloc FAILED");
+	/* Allocate Bosch-style container structure (type 0x1400) */
+	PDU_RSC_ID_ITEM *item = (PDU_RSC_ID_ITEM*)calloc(1, sizeof(PDU_RSC_ID_ITEM));
+	if (!item) {
+		logmsg("PDUGetResourceIds: calloc item FAILED");
 		return PDU_ERR_FCT_FAILED;
 	}
 
-	list[0] = NUM_RESOURCES;
-	for (int i = 0; i < NUM_RESOURCES; i++)
-		list[i + 1] = g_Resources[i].ResourceId;
+	/* Allocate resource ID array (12 bytes per entry per Ghidra) */
+	PDU_RSC_ID_ENTRY *entries = (PDU_RSC_ID_ENTRY*)calloc(NUM_RESOURCES, sizeof(PDU_RSC_ID_ENTRY));
+	if (!entries) {
+		logmsg("PDUGetResourceIds: calloc entries FAILED");
+		free(item);
+		return PDU_ERR_FCT_FAILED;
+	}
 
-	list[NUM_RESOURCES + 1] = PDU_ID_UNDEF;
+	item->ItemType = PDU_IT_RSC_ID;
+	item->NumEntries = NUM_RESOURCES;
+	item->pResourceIdData = entries;
 
-	*ppList = list;
-	logmsg("PDUGetResourceIds: EXIT count=%u first=%u", list[0], list[1]);
+	for (int i = 0; i < NUM_RESOURCES; i++) {
+		entries[i].ResourceId = g_Resources[i].ResourceId;
+		entries[i].hMod = 1;
+		entries[i].ResourceStatus = 1; // AVAIL
+	}
+
+	*ppList = item;
+	logmsg("PDUGetResourceIds: EXIT NumEntries=%u first=%u", item->NumEntries, entries[0].ResourceId);
 	return PDU_STATUS_NOERROR;
 }
 
@@ -2854,6 +2865,7 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUGetEventItem(T_PDU_UINT32 hMod,
 		PDU_EVENT_ITEM *ev = evq_pop(&g_ModuleEvtQ);
 		if (ev) {
 			*ppEventItem = ev;
+			ev->pCoPTag = g.pCallbackUserData;
 			logmsg("PDUGetEventItem: returning module event type=0x%04lX", ev->ItemType);
 			return PDU_STATUS_NOERROR;
 		}
@@ -2867,6 +2879,7 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUGetEventItem(T_PDU_UINT32 hMod,
 	PDU_EVENT_ITEM *ev = evq_pop(&c->EvtQ);
 	if (ev) {
 		*ppEventItem = ev;
+		ev->pCoPTag = g.pCallbackUserData;
 		logmsg("PDUGetEventItem: returning event type=0x%04lX hConn=%u",
 			ev->ItemType, hConn);
 		if (ev->ItemType == PDU_IT_RESULT) {
@@ -3154,10 +3167,7 @@ T_PDU_UINT32 PDU_CALL PDUIoCtl(
 		logmsg("PDUIoCtl: pInputData->ItemType=0x%04lX", item->ItemType);
 	}
 
-
 	if (IoCtlCommandId == PDU_ID_UNDEF && hConn == PDU_HANDLE_UNDEF) {
-		// Tech2Win's own wrapper returns 0x50 for this case per Ghidra analysis
-		// Do NOT touch ppOutputData - Tech2Win doesn't dereference it on error return
 		return PDU_ERR_INVALID_PARAMETERS;
 	}
 
@@ -3167,18 +3177,6 @@ T_PDU_UINT32 PDU_CALL PDUIoCtl(
 		return PDU_ERR_PDUAPI_NOT_CONSTRUCTED;
 
 	if (ppOutputData) *ppOutputData = NULL;
-
-	// Accept undefined handles for module-level IOCTLs
-	if (hConn == PDU_ID_UNDEF || hConn == 0xFFFFFFFF) {
-		if (IoCtlCommandId != PDU_IOCTL_READ_VBATT &&
-			IoCtlCommandId != PDU_IOCTL_READ_PROG_VOLTAGE &&
-			IoCtlCommandId != PDU_IOCTL_GET_CABLE_ID &&
-			IoCtlCommandId != PDU_IOCTL_READ_IGNITION_SENSE) 
-		{
-			logmsg("PDUIoCtl: hConn is UNDEF, returning NOERROR");
-			return PDU_STATUS_NOERROR;
-		}
-	}
 
 	PDU_CONN_STATE *c = GetConn(hConn);
 	unsigned long chanID =
@@ -3405,18 +3403,27 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUGetLastError(T_PDU_UINT32  hMod, T_PDU_UINT32  
 	T_PDU_UINT32 *pErrCode, T_PDU_UINT32 *pErrEvtCount,
 	T_PDU_UINT32 *pErrDestHandle, T_PDU_UINT32 param6)
 {
-	logmsg("PDUGetLastError: CALLED");
-	UNUSED(hMod); UNUSED(hConn); UNUSED(param6);
+	logmsg("PDUGetLastError: ENTER hMod=%u hConn=%u", hMod, hConn);
+	UNUSED(param6);
+
 	if (pErrCode)       *pErrCode = PDU_STATUS_NOERROR;
 	if (pErrEvtCount)   *pErrEvtCount = 0;
 	if (pErrDestHandle) *pErrDestHandle = PDU_HANDLE_UNDEF;
-	if (g.Constructed && g.pfGetLastError) {
-		char desc[512] = { 0 };
-		g.pfGetLastError(desc);
-		/* desc could be logged here */
+
+	if (hConn == PDU_HANDLE_UNDEF || hConn == 0xFFFFFFFF) {
+		if (pErrCode) *pErrCode = g.LastError;
 	}
+	else {
+		PDU_CONN_STATE *c = GetConn(hConn);
+		if (c) {
+			if (pErrCode) *pErrCode = c->LastError;
+		}
+	}
+
+	logmsg("PDUGetLastError: EXIT code=0x%08X", pErrCode ? *pErrCode : 0);
 	return PDU_STATUS_NOERROR;
 }
+
 
 /* =========================================================================
 * PDUGetTimestamp
@@ -3450,7 +3457,7 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUGetStatus(T_PDU_UINT32 hMod,
 	if (!g.Constructed) return PDU_ERR_PDUAPI_NOT_CONSTRUCTED;
 	if (!pStatus) return PDU_ERR_INVALID_PARAMETERS;
 
-	if (hCoPrimitive == PDU_HANDLE_UNDEF || hCoPrimitive == 0xFFFFFFFF) {
+	if (hCoPrimitive == PDU_HANDLE_UNDEF || hCoPrimitive == 0xFFFFFFFF || hCoPrimitive == 0) {
 		PDU_CONN_STATE *c = GetConn(hConn);
 		if (c) {
 			*pStatus = PDU_CLLST_COMM_STARTED;
@@ -3485,8 +3492,9 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUGetStatus(T_PDU_UINT32 hMod,
 	return PDU_STATUS_NOERROR;
 }
 
-/* =========================================================================
-		if (hCoPrimitive == PDU_HANDLE_UNDEF || hCoPrimitive == 0xFFFFFFFF) {
+}
+
+PDU_API T_PDU_UINT32 PDU_CALL PDUDestroyItem(PDU_ITEM *p)
 			*pStatus = 0x8052;  // PDU_CLLST_COMM_STARTED
 		}
 		else {
@@ -3746,11 +3754,11 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUGetDeviceIds(
 	item->pDeviceData = devs;
 
 	devs[0].hMod = 1;
-	devs[0].hDev = 1;
+	devs[0].hDev = 0; // Match MDI log (ID=0)
 	devs[0].DeviceStatus = PDU_DEVST_AVAIL;
 
 	*pDeviceIdList = item;
-	logmsg("PDUGetDeviceIds: EXIT OK (1 device, id=1)");
+	logmsg("PDUGetDeviceIds: EXIT OK (1 device, id=0)");
 	return PDU_STATUS_NOERROR;
 }
 
@@ -3763,9 +3771,9 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUOpenDevice(T_PDU_UINT32 hMod, T_PDU_UINT32 hDev
 	if (!g.Constructed) return PDU_ERR_PDUAPI_NOT_CONSTRUCTED;
 	if (!phDev) return PDU_ERR_INVALID_PARAMETERS;
 
-	if (hDev != 1) return PDU_ERR_INVALID_HANDLE;
+	if (hDev != 0) return PDU_ERR_INVALID_HANDLE;
 
-	*phDev = 1;
+	*phDev = 0;
 	return PDU_STATUS_NOERROR;
 }
 
