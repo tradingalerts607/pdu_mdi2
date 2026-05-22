@@ -32,25 +32,38 @@
 
 static void logmsg(const char *fmt, ...)
 {
-	FILE *f = fopen("C:\\GM\\mdi2_shim.log", "a");
-	if (!f) return;
+	CreateDirectoryA("C:\\GM", NULL);
+
+	FILE *f1 = fopen("C:\\GM\\mdi2_shim.log", "a");
+	FILE *f2 = fopen("mdi2_shim.log", "a");
 
 	SYSTEMTIME st;
 	GetLocalTime(&st);
-
 	DWORD tid = GetCurrentThreadId();
 
-	fprintf(f, "[%02d:%02d:%02d.%03d] [TID %lu] ",
-		st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
-		(unsigned long)tid);
+	if (f1) {
+		fprintf(f1, "[%02d:%02d:%02d.%03d] [TID %lu] ",
+			st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
+			(unsigned long)tid);
+		va_list args;
+		va_start(args, fmt);
+		vfprintf(f1, fmt, args);
+		va_end(args);
+		fprintf(f1, "\n");
+		fclose(f1);
+	}
 
-	va_list args;
-	va_start(args, fmt);
-	vfprintf(f, fmt, args);
-	va_end(args);
-
-	fprintf(f, "\n");
-	fclose(f);
+	if (f2) {
+		fprintf(f2, "[%02d:%02d:%02d.%03d] [TID %lu] ",
+			st.wHour, st.wMinute, st.wSecond, st.wMilliseconds,
+			(unsigned long)tid);
+		va_list args;
+		va_start(args, fmt);
+		vfprintf(f2, fmt, args);
+		va_end(args);
+		fprintf(f2, "\n");
+		fclose(f2);
+	}
 }
 
 #define LOG0(msg) \
@@ -564,15 +577,15 @@ typedef struct PDU_EVENT_ITEM {
 } PDU_EVENT_ITEM;
 
 typedef struct {
-	T_PDU_UINT32 ResourceId;
 	T_PDU_UINT32 hMod;
-	T_PDU_UINT32 ResourceStatus;
-} PDU_RSC_ID_ENTRY;
+	T_PDU_UINT32 NumIds;
+	T_PDU_UINT32 *pResourceIdArray;
+} PDU_RSC_ID_ITEM_DATA;
 
 typedef struct {
-	T_PDU_IT          ItemType;
-	UNUM32            NumEntries;
-	PDU_RSC_ID_ENTRY *pResourceIdData;
+	T_PDU_IT              ItemType;
+	UNUM32                NumEntries;
+	PDU_RSC_ID_ITEM_DATA *pResourceIdData;
 } PDU_RSC_ID_ITEM;
 
 #pragma pack(pop)
@@ -1955,7 +1968,7 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUGetResourceIds(
 	void         *pRscData,
 	PDU_RSC_ID_ITEM **ppList)
 {
-	UNUSED(hMod); UNUSED(pRscData);
+	UNUSED(pRscData);
 
 	logmsg("PDUGetResourceIds: ENTER hMod=%u ppList=%p", hMod, ppList);
 
@@ -1965,33 +1978,46 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUGetResourceIds(
 	if (!ppList)
 		return PDU_ERR_INVALID_PARAMETERS;
 
-	/* Allocate Bosch-style container structure (type 0x1400) */
+	T_PDU_UINT32 targetMod = (hMod == PDU_HANDLE_UNDEF) ? 1 : hMod;
+
+	/* Allocate D-PDU spec-compliant container structure (type PDU_IT_RSC_ID) */
 	PDU_RSC_ID_ITEM *item = (PDU_RSC_ID_ITEM*)calloc(1, sizeof(PDU_RSC_ID_ITEM));
 	if (!item) {
 		logmsg("PDUGetResourceIds: calloc item FAILED");
 		return PDU_ERR_FCT_FAILED;
 	}
 
-	/* Allocate resource ID array (12 bytes per entry per Ghidra) */
-	PDU_RSC_ID_ENTRY *entries = (PDU_RSC_ID_ENTRY*)calloc(NUM_RESOURCES, sizeof(PDU_RSC_ID_ENTRY));
+	/* Allocate 1 module entry of type PDU_RSC_ID_ITEM_DATA */
+	PDU_RSC_ID_ITEM_DATA *entries = (PDU_RSC_ID_ITEM_DATA*)calloc(1, sizeof(PDU_RSC_ID_ITEM_DATA));
 	if (!entries) {
 		logmsg("PDUGetResourceIds: calloc entries FAILED");
 		free(item);
 		return PDU_ERR_FCT_FAILED;
 	}
 
+	/* Allocate ResourceId array */
+	T_PDU_UINT32 *resourceIds = (T_PDU_UINT32*)calloc(NUM_RESOURCES, sizeof(T_PDU_UINT32));
+	if (!resourceIds) {
+		logmsg("PDUGetResourceIds: calloc resourceIds FAILED");
+		free(entries);
+		free(item);
+		return PDU_ERR_FCT_FAILED;
+	}
+
 	item->ItemType = PDU_IT_RSC_ID;
-	item->NumEntries = NUM_RESOURCES;
+	item->NumEntries = 1; // 1 module entry
 	item->pResourceIdData = entries;
 
+	entries[0].hMod = targetMod;
+	entries[0].NumIds = NUM_RESOURCES;
+	entries[0].pResourceIdArray = resourceIds;
+
 	for (int i = 0; i < NUM_RESOURCES; i++) {
-		entries[i].ResourceId = g_Resources[i].ResourceId;
-		entries[i].hMod = 1;
-		entries[i].ResourceStatus = 1; // AVAIL
+		resourceIds[i] = g_Resources[i].ResourceId;
 	}
 
 	*ppList = item;
-	logmsg("PDUGetResourceIds: EXIT NumEntries=%u first=%u", item->NumEntries, entries[0].ResourceId);
+	logmsg("PDUGetResourceIds: EXIT NumEntries=%u hMod=%u first=%u", item->NumEntries, entries[0].hMod, resourceIds[0]);
 	return PDU_STATUS_NOERROR;
 }
 
@@ -3561,7 +3587,14 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUDestroyItem(PDU_ITEM *p)
 	}
 	else if (p->ItemType == PDU_IT_RSC_ID) {
 		PDU_RSC_ID_ITEM *ri = (PDU_RSC_ID_ITEM*)p;
-		if (ri->pResourceIdData) free(ri->pResourceIdData);
+		if (ri->pResourceIdData) {
+			for (UNUM32 i = 0; i < ri->NumEntries; i++) {
+				if (ri->pResourceIdData[i].pResourceIdArray) {
+					free(ri->pResourceIdData[i].pResourceIdArray);
+				}
+			}
+			free(ri->pResourceIdData);
+		}
 		free(p);
 	}
 	else if (p->ItemType == PDU_IT_UNIQUE_RESP_ID_TABLE) {
