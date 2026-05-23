@@ -707,6 +707,7 @@ typedef struct {
 * ====================================================================== */
 static struct {
 	int              Constructed;
+	T_PDU_UINT32     LastError;
 	HMODULE          hJ2534Dll;
 	unsigned long    J2534DeviceID;
 	int              DeviceOpen;
@@ -3518,41 +3519,8 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUGetStatus(T_PDU_UINT32 hMod,
 	return PDU_STATUS_NOERROR;
 }
 
-}
-
-PDU_API T_PDU_UINT32 PDU_CALL PDUDestroyItem(PDU_ITEM *p)
-			*pStatus = 0x8052;  // PDU_CLLST_COMM_STARTED
-		}
-		else {
-			PDU_CONN_STATE *c = GetConn(hConn);
-			if (c && c->LastCoPrimHandle == hCoPrimitive) {
-				DWORD elapsed = GetTickCount() - c->LastCoPrimTime;
-				if (elapsed > 150) {
-					// Timed out � push finished event and report done
-					PDU_EVENT_ITEM *evFin = (PDU_EVENT_ITEM*)calloc(1, sizeof(PDU_EVENT_ITEM));
-					T_PDU_UINT32 *pStat = (T_PDU_UINT32*)calloc(1, sizeof(T_PDU_UINT32));
-					*pStat = PDU_COPST_FINISHED;  // PDU_COPST_FINISHED
-					evFin->ItemType = PDU_IT_STATUS;
-					evFin->hCoPrimitive = hCoPrimitive;
-					evFin->pData = pStat;
-					evq_push(&c->EvtQ, evFin);
-					*pStatus = PDU_COPST_FINISHED;  // FINISHED
-				}
-				else {
-					*pStatus = 0x8011;  // EXECUTING
-				}
-			}
-			else {
-				*pStatus = PDU_COPST_FINISHED;  // FINISHED
-			}
-		}
-	}
-	return PDU_STATUS_NOERROR;
-
-}
-
 /* =========================================================================
-* PDUDestroyItem / PDUDestroyItems � free memory returned to Tech2Win
+* PDUDestroyItem / PDUDestroyItems  free memory returned to Tech2Win
 * ====================================================================== */
 PDU_API T_PDU_UINT32 PDU_CALL PDUDestroyItem(PDU_ITEM *p)
 {
