@@ -1,6 +1,10 @@
 /*
 * pdu_mdi2.c
+<<<<<<< Updated upstream
 * ISO 22900-2 D-PDU API shim � GM MDI 2 / SM2 Pro / Tech2Win
+=======
+* ISO 22900-2 D-PDU API shim ? GM MDI 2 / SM2 Pro / Tech2Win
+>>>>>>> Stashed changes
 *
 * Data flow:
 *   Tech2Win
@@ -181,7 +185,11 @@ static void logmsg(const char *fmt, ...)
 #define PDU_IOCTL_CLEAR_TX_PENDING      18UL
 
 /* =========================================================================
+<<<<<<< Updated upstream
 * J2534 types (minimal � enough for smj2534.dll)
+=======
+* J2534 types (minimal ? enough for smj2534.dll)
+>>>>>>> Stashed changes
 * ====================================================================== */
 #define J2534_J1850VPW                  0x01UL
 #define J2534_PASS_FILTER               0x01UL
@@ -569,9 +577,15 @@ typedef struct {
 } PDU_RESULT_DATA;
 
 typedef struct PDU_EVENT_ITEM {
+<<<<<<< Updated upstream
 	T_PDU_IT      ItemType;       // offset 0  � ItemType value goes here
 	T_PDU_UINT32  hCoPrimitive;   // offset 4  � spec calls this hCop
 	void         *pCoPTag;        // offset 8  � NULL for us
+=======
+	T_PDU_IT      ItemType;       // offset 0  ? ItemType value goes here
+	T_PDU_UINT32  hCoPrimitive;   // offset 4  ? spec calls this hCop
+	void         *pCoPTag;        // offset 8  ? NULL for us
+>>>>>>> Stashed changes
 	T_PDU_UINT32  Timestamp;      // offset 12
 	void         *pData;          // offset 16
 } PDU_EVENT_ITEM;
@@ -603,7 +617,11 @@ typedef void (PDU_CALL *T_PDU_CALLBACK)(T_PDU_UINT32 ItemType,
 	void *pAPITag);
 
 /* =========================================================================
+<<<<<<< Updated upstream
 * Event queue � lock-free ring buffer of PDU_EVENT_ITEM*
+=======
+* Event queue ? lock-free ring buffer of PDU_EVENT_ITEM*
+>>>>>>> Stashed changes
 * ====================================================================== */
 #define EVT_QUEUE_SIZE  1024     /* must be power of 2 */
 #define EVT_QUEUE_MASK  (EVT_QUEUE_SIZE - 1)
@@ -612,7 +630,11 @@ typedef struct {
 	PDU_EVENT_ITEM * volatile slots[EVT_QUEUE_SIZE];
 	volatile LONG head;         /* consumer reads here */
 	volatile LONG tail;         /* producer writes here */
+<<<<<<< Updated upstream
 	CRITICAL_SECTION lock;      /* simple mutex � good enough at this rate */
+=======
+	CRITICAL_SECTION lock;      /* simple mutex ? good enough at this rate */
+>>>>>>> Stashed changes
 } EventQueue;
 
 static void evq_init(EventQueue *q) {
@@ -799,7 +821,11 @@ static const T_PDU_UINT32 RUNTIME_ResourceID = 1;
 static const T_PDU_UINT32 RUNTIME_ComLogicalLinkID = 1;
 
 /* =========================================================================
+<<<<<<< Updated upstream
 * Resource table � verbatim from MDI2.mdi
+=======
+* Resource table ? verbatim from MDI2.mdi
+>>>>>>> Stashed changes
 * ====================================================================== */
 static const struct {
 	T_PDU_UINT32 ResourceId;
@@ -1331,12 +1357,20 @@ static int LoadJ2534(void)
 	char *slash = strrchr(jpath, '\\');
 
 	if (slash) {
+<<<<<<< Updated upstream
 		LOG1("Slash found at offset %ld � replacing filename with smj2534.dll",
+=======
+		LOG1("Slash found at offset %ld ? replacing filename with smj2534.dll",
+>>>>>>> Stashed changes
 			(long)(slash - jpath));
 		strcpy_s(slash + 1, MAX_PATH - (slash - jpath) - 1, "smj2534.dll");
 	}
 	else {
+<<<<<<< Updated upstream
 		LOG0("No slash found � using smj2534.dll in current directory");
+=======
+		LOG0("No slash found ? using smj2534.dll in current directory");
+>>>>>>> Stashed changes
 		strcpy_s(jpath, MAX_PATH, "smj2534.dll");
 	}
 
@@ -1357,7 +1391,11 @@ static int LoadJ2534(void)
         g.field = (type)GetProcAddress(g.hJ2534Dll, name); \
         LOG1("GetProcAddress(%s) returned %p", name, g.field); \
         if (!g.field) { \
+<<<<<<< Updated upstream
             LOG1("GetProcAddress(%s) FAILED � unloading DLL", name); \
+=======
+            LOG1("GetProcAddress(%s) FAILED ? unloading DLL", name); \
+>>>>>>> Stashed changes
             FreeLibrary(g.hJ2534Dll); \
             g.hJ2534Dll = NULL; \
             return 0; \
@@ -1376,7 +1414,11 @@ static int LoadJ2534(void)
 	GP("PassThruGetLastError", FN_PassThruGetLastError, pfGetLastError);
 
 #undef GP
+<<<<<<< Updated upstream
 	LOG0("All J2534 exports resolved � calling PassThruOpen");
+=======
+	LOG0("All J2534 exports resolved ? calling PassThruOpen");
+>>>>>>> Stashed changes
 
 	unsigned long devId = 0;
 	long r = -1;
@@ -1407,7 +1449,11 @@ static int LoadJ2534(void)
 	}
 
 	if (r != J2534_STATUS_NOERROR) {
+<<<<<<< Updated upstream
 		LOG0("PassThruOpen FAILED � unloading J2534 DLL");
+=======
+		LOG0("PassThruOpen FAILED ? unloading J2534 DLL");
+>>>>>>> Stashed changes
 		FreeLibrary(g.hJ2534Dll);
 		g.hJ2534Dll = NULL;
 		return 0;
@@ -1416,7 +1462,11 @@ static int LoadJ2534(void)
 	g.J2534DeviceID = devId;
 	g.DeviceOpen = 1;
 
+<<<<<<< Updated upstream
 	LOG0("SUCCESS � J2534 device opened");
+=======
+	LOG0("SUCCESS ? J2534 device opened");
+>>>>>>> Stashed changes
 	return 1;
 }
 /* =========================================================================
@@ -1464,7 +1514,11 @@ static int AllocConn(T_PDU_UINT32 *phConn)
 		}
 	}
 
+<<<<<<< Updated upstream
 	LOG0("FAILED � no free connection slots");
+=======
+	LOG0("FAILED ? no free connection slots");
+>>>>>>> Stashed changes
 	return 0;
 }
 
@@ -1573,7 +1627,11 @@ static int RegisterDll(void)
 	return 1;
 }
 
+<<<<<<< Updated upstream
 static int UnregisterDll(void)   // <�� ADD THIS HERE
+=======
+static int UnregisterDll(void)   // <?? ADD THIS HERE
+>>>>>>> Stashed changes
 {
 	LOG0("ENTER");
 
@@ -1618,7 +1676,11 @@ BOOL WINAPI DllMain(HINSTANCE hInst, DWORD reason, LPVOID reserved)
 }
 
 /* =========================================================================
+<<<<<<< Updated upstream
 * Registration entry points � call once from an installer / elevated cmd:
+=======
+* Registration entry points ? call once from an installer / elevated cmd:
+>>>>>>> Stashed changes
 *   rundll32 pdu_mdi2.dll,DllRegisterServer
 *   rundll32 pdu_mdi2.dll,DllUnregisterServer
 * ====================================================================== */
@@ -1633,7 +1695,11 @@ HRESULT __stdcall DllUnregisterServer(void)
 }
 
 /* =========================================================================
+<<<<<<< Updated upstream
 * Ready notification thread � fires callback 500ms after construct
+=======
+* Ready notification thread ? fires callback 500ms after construct
+>>>>>>> Stashed changes
 * ====================================================================== */
 static unsigned __stdcall ReadyThreadProc(void *arg)
 {
@@ -1642,7 +1708,11 @@ static unsigned __stdcall ReadyThreadProc(void *arg)
 	return 0;
 }
 /* =========================================================================
+<<<<<<< Updated upstream
 * PDUConstruct � initialize, load MDI, load smj2534.dll
+=======
+* PDUConstruct ? initialize, load MDI, load smj2534.dll
+>>>>>>> Stashed changes
 * ====================================================================== */
 PDU_API T_PDU_UINT32 PDU_CALL PDUConstruct(const char *OptionStr, void *pAPITag)
 {
@@ -1653,7 +1723,11 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUConstruct(const char *OptionStr, void *pAPITag)
 	LOG0("PDUConstruct: Entered GlobalLock");
 
 	if (g.Constructed) {
+<<<<<<< Updated upstream
 		LOG0("PDUConstruct: Already constructed � returning OK");
+=======
+		LOG0("PDUConstruct: Already constructed ? returning OK");
+>>>>>>> Stashed changes
 		LeaveCriticalSection(&g.GlobalLock);
 		return PDU_STATUS_NOERROR;
 	}
@@ -1690,7 +1764,11 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUConstruct(const char *OptionStr, void *pAPITag)
 			"MDI2.mdi");
 	}
 	else {
+<<<<<<< Updated upstream
 		LOG0("PDUConstruct: No slash found � using default MDI2.mdi");
+=======
+		LOG0("PDUConstruct: No slash found ? using default MDI2.mdi");
+>>>>>>> Stashed changes
 		strcpy_s(g.MdiPath, MAX_PATH, "MDI2.mdi");
 	}
 
@@ -1699,7 +1777,11 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUConstruct(const char *OptionStr, void *pAPITag)
 	LOG0("PDUConstruct: Checking if MDF/MDI file exists");
 	FILE *f = fopen(g.MdiPath, "r");
 	if (!f) {
+<<<<<<< Updated upstream
 		LOG1("PDUConstruct: ERROR � MDF/MDI not found at %s", g.MdiPath);
+=======
+		LOG1("PDUConstruct: ERROR ? MDF/MDI not found at %s", g.MdiPath);
+>>>>>>> Stashed changes
 		LeaveCriticalSection(&g.GlobalLock);
 		return PDU_ERR_FCT_FAILED;
 	}
@@ -1880,12 +1962,20 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUGetVersion(
 	LOG1("ENTER hMod=%u pVer=%p", hMod, pVer);
 
 	if (!g.Constructed) {
+<<<<<<< Updated upstream
 		LOG0("ERROR � API not constructed");
+=======
+		LOG0("ERROR ? API not constructed");
+>>>>>>> Stashed changes
 		return PDU_ERR_PDUAPI_NOT_CONSTRUCTED;
 	}
 
 	if (!pVer) {
+<<<<<<< Updated upstream
 		LOG0("ERROR � pVer is NULL");
+=======
+		LOG0("ERROR ? pVer is NULL");
+>>>>>>> Stashed changes
 		return PDU_ERR_INVALID_PARAMETERS;
 	}
 
@@ -1921,7 +2011,11 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUGetVersion(
 }
 
 /* =========================================================================
+<<<<<<< Updated upstream
 * PDUGetModuleIds � module type 28
+=======
+* PDUGetModuleIds ? module type 28
+>>>>>>> Stashed changes
 * ====================================================================== */
 
 PDU_API T_PDU_UINT32 PDU_CALL PDUGetModuleIds(PDU_MODULE_ITEM **pModuleIdList)
@@ -1962,7 +2056,11 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUGetModuleIds(PDU_MODULE_ITEM **pModuleIdList)
 	return PDU_STATUS_NOERROR;
 }
 /* =========================================================================
+<<<<<<< Updated upstream
 * PDUGetResourceIds � Bosch-style, 2 parameters
+=======
+* PDUGetResourceIds ? Bosch-style, 2 parameters
+>>>>>>> Stashed changes
 * ====================================================================== */
 PDU_API T_PDU_UINT32 PDU_CALL PDUGetResourceIds(
 	T_PDU_UINT32  hMod,
@@ -2063,7 +2161,11 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUOpenResource(T_PDU_UINT32  hMod,
 }
 
 /* =========================================================================
+<<<<<<< Updated upstream
 * PDUModuleConnect � PassThruOpen to SM2
+=======
+* PDUModuleConnect ? PassThruOpen to SM2
+>>>>>>> Stashed changes
 * ====================================================================== */
 PDU_API T_PDU_UINT32 PDU_CALL PDUModuleConnect(T_PDU_UINT32 hMod)
 {
@@ -2085,12 +2187,20 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUModuleDisconnect(T_PDU_UINT32 hMod)
 	UNUSED(hMod);
 	if (!g.Constructed) return PDU_ERR_PDUAPI_NOT_CONSTRUCTED;
 	g.DeviceOpen = 0;
+<<<<<<< Updated upstream
 	// DO NOT call g.pfClose here � device stays open until PDUDestruct
+=======
+	// DO NOT call g.pfClose here ? device stays open until PDUDestruct
+>>>>>>> Stashed changes
 	return PDU_STATUS_NOERROR;
 }
 
 /* =========================================================================
+<<<<<<< Updated upstream
 * PDUGetObjectId � global Bosch-style catalog
+=======
+* PDUGetObjectId ? global Bosch-style catalog
+>>>>>>> Stashed changes
 * ========================================================================= */
 PDU_API T_PDU_UINT32 PDU_CALL PDUGetObjectId(
 	T_PDU_UINT32  type,
@@ -2254,7 +2364,11 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUGetObjectId(
 			{ "CP_ByteCountOffset",          164 },
 			{ "CP_MessageScheduler",         165 },
 
+<<<<<<< Updated upstream
 			/* Extra ones Tech2Win probes � stub IDs */
+=======
+			/* Extra ones Tech2Win probes ? stub IDs */
+>>>>>>> Stashed changes
 			{ "CP_5BaudAddressPhys",         0x3001 },
 			{ "CP_5BaudMode",                0x3002 },
 			{ "CP_As",                       0x3003 },
@@ -2306,7 +2420,11 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUGetObjectId(
 		}
 
 		if (*pId == PDU_ID_UNDEF)
+<<<<<<< Updated upstream
 			*pId = 0x3FFF;   /* generic �supported� placeholder */
+=======
+			*pId = 0x3FFF;   /* generic ?supported? placeholder */
+>>>>>>> Stashed changes
 
 		break;
 	}
@@ -2375,7 +2493,11 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUGetObjectId(
 }
 
 /* =========================================================================
+<<<<<<< Updated upstream
 * PDUSetComParam � accept everything, store basic UINT32 values
+=======
+* PDUSetComParam ? accept everything, store basic UINT32 values
+>>>>>>> Stashed changes
 * ========================================================================= */
 PDU_API T_PDU_UINT32 PDU_CALL PDUSetComParam(
 	T_PDU_UINT32   hMod,
@@ -2409,7 +2531,11 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUSetComParam(
 }
 
 /* =========================================================================
+<<<<<<< Updated upstream
 * PDUGetComParam � return stored values or sane defaults
+=======
+* PDUGetComParam ? return stored values or sane defaults
+>>>>>>> Stashed changes
 * ========================================================================= */
 PDU_API T_PDU_UINT32 PDU_CALL PDUGetComParam(
     T_PDU_UINT32    hMod,
@@ -2460,7 +2586,11 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUGetComParam(
 }
 
 /* =========================================================================
+<<<<<<< Updated upstream
 * PDUCreateComLogicalLink � PassThruConnect J1850VPW @ 10400 baud
+=======
+* PDUCreateComLogicalLink ? PassThruConnect J1850VPW @ 10400 baud
+>>>>>>> Stashed changes
 * ====================================================================== */
 PDU_API T_PDU_UINT32 PDU_CALL PDUCreateComLogicalLink(
 	T_PDU_UINT32   hMod,
@@ -2990,7 +3120,11 @@ fail:
 
 #if 0
 /* =========================================================================
+<<<<<<< Updated upstream
 * PDUSendReceive � minimal working implementation
+=======
+* PDUSendReceive ? minimal working implementation
+>>>>>>> Stashed changes
 * ====================================================================== */
 PDU_API T_PDU_UINT32 PDU_CALL PDUSendReceive(
 	T_PDU_UINT32 hMod,
@@ -3150,7 +3284,11 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUSendReceive(
 #endif
 
 /* =========================================================================
+<<<<<<< Updated upstream
 * PDUGetEventItems � drain entire queue into linked list
+=======
+* PDUGetEventItems ? drain entire queue into linked list
+>>>>>>> Stashed changes
 * ====================================================================== */
 PDU_API T_PDU_UINT32 PDU_CALL PDUGetEventItems(void)
 {
@@ -3177,7 +3315,11 @@ PDU_API T_PDU_UINT32 PDU_CALL PDURegisterEventCallback(
 
 
 /* =========================================================================
+<<<<<<< Updated upstream
 * PDUIoCtl � maps PDU IoCtl IDs 1-18 to J2534 ioctl calls
+=======
+* PDUIoCtl ? maps PDU IoCtl IDs 1-18 to J2534 ioctl calls
+>>>>>>> Stashed changes
 * ====================================================================== */
 T_PDU_UINT32 PDU_CALL PDUIoCtl(
 	T_PDU_UINT32  hMod,
@@ -3490,6 +3632,7 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUGetStatus(T_PDU_UINT32 hMod,
 			*pStatus = PDU_CLLST_COMM_STARTED;
 		}
 		else {
+<<<<<<< Updated upstream
 			*pStatus = PDU_CLLST_OFFLINE;
 		}
 	}
@@ -3501,6 +3644,21 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUGetStatus(T_PDU_UINT32 hMod,
 					logmsg("PDUGetStatus: primitive %lu timeout, forcing FINISHED", hCoPrimitive);
 					c->PrimitiveActive = 0;
 					*pStatus = PDU_COPST_FINISHED;
+=======
+			PDU_CONN_STATE *c = GetConn(hConn);
+			if (c && c->LastCoPrimHandle == hCoPrimitive) {
+				DWORD elapsed = GetTickCount() - c->LastCoPrimTime;
+				if (elapsed > 150) {
+					// Timed out ? push finished event and report done
+					PDU_EVENT_ITEM *evFin = (PDU_EVENT_ITEM*)calloc(1, sizeof(PDU_EVENT_ITEM));
+					T_PDU_UINT32 *pStat = (T_PDU_UINT32*)calloc(1, sizeof(T_PDU_UINT32));
+					*pStat = PDU_COPST_FINISHED;  // PDU_COPST_FINISHED
+					evFin->ItemType = PDU_IT_STATUS;
+					evFin->hCoPrimitive = hCoPrimitive;
+					evFin->pData = pStat;
+					evq_push(&c->EvtQ, evFin);
+					*pStatus = PDU_COPST_FINISHED;  // FINISHED
+>>>>>>> Stashed changes
 				}
 				else {
 					*pStatus = PDU_COPST_EXECUTING;
@@ -3520,7 +3678,11 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUGetStatus(T_PDU_UINT32 hMod,
 }
 
 /* =========================================================================
+<<<<<<< Updated upstream
 * PDUDestroyItem / PDUDestroyItems  free memory returned to Tech2Win
+=======
+* PDUDestroyItem / PDUDestroyItems ? free memory returned to Tech2Win
+>>>>>>> Stashed changes
 * ====================================================================== */
 PDU_API T_PDU_UINT32 PDU_CALL PDUDestroyItem(PDU_ITEM *p)
 {
