@@ -1,4 +1,4 @@
-﻿/*
+/*
 * pdu_mdi2.c
 * ISO 22900-2 D-PDU API shim � GM MDI 2 / SM2 Pro / Tech2Win
 *
@@ -135,6 +135,9 @@ static void logmsg(const char *fmt, ...)
 #define PDU_CLLST_COMM_STARTED			0x8052UL
 
 #define CP_EcuRespSourceAddress         143UL
+#define CP_TesterSourceAddress          144UL
+#define CP_PhysReqTargetAddr            146UL
+#define CP_PhysRespFormatPriorityType   147UL
 #define CP_FuncRespFormatPriorityType   150UL
 #define CP_FuncRespTargetAddr           151UL
 
@@ -691,7 +694,6 @@ typedef struct {
 	PDU_IO_FILTER_LIST *pActiveFilters;
 
 	int           PrimitiveActive;
-	uint8_t       ExpectedResponseId;
 
 	int           ResultCount;
 	int           ExpectedResults;
@@ -987,6 +989,7 @@ static void Cll_SyncURID(PDU_CONN_STATE *c)
 				dst->ExpectedSrcAddr = (UNUM8)(val & 0xFF);
 				break;
 			case CP_FuncRespFormatPriorityType:
+			case CP_PhysRespFormatPriorityType:
 				dst->ExpectedHdrByte = (UNUM8)(val & 0xFF);
 				break;
 			case CP_FuncRespTargetAddr:
@@ -1175,20 +1178,27 @@ static unsigned __stdcall RxThreadProc(void *pArg)
 					continue;
 				}
 
-				// 1. Primitive Gating vs Background URID
-				if (c->ExpectedResponseId != 0) {
-					if (msg->DataSize < 3 || msg->Data[0] != c->ExpectedResponseId) {
-						// Not our response, and a primitive is active -> drop
-						continue;
-					}
-					logmsg("RxThread: ACCEPT header=0x%02X expected=0x%02X", msg->Data[0], c->ExpectedResponseId);
+				/* -------------------------------------------------------
+				 * RX Gating Logic (spec J.1.3.2.2)
+				 *
+				 * Accept a message if:
+				 *   (a) A primitive is active (PrimitiveActive == 1), OR
+				 *   (b) A URID table entry matches the header bytes.
+				 *
+				 * Per spec: "Each response will contain the URID of
+				 * PDU_ID_UNDEF until the application configures the
+				 * URID Table."  So we MUST accept messages during
+				 * active primitives even without a URID table.
+				 * ------------------------------------------------------- */
+				int accepted = 0;
+
+				// 1. Primitive acceptance: any non-echo msg during active CoP
+				if (c->PrimitiveActive) {
+					accepted = 1;
 					c->LastCoPrimTime = GetTickCount();
-				}
-				else {
-					// Background chatter: ONLY pass if it matches a URID
-					if (c->ActiveURID.NumEntries == 0) {
-						// No URID table yet, and not a primitive response -> DROP
-						continue;
+					if (msg->DataSize >= 3) {
+						logmsg("RxThread: ACCEPT (primitive) hdr=0x%02X tgt=0x%02X src=0x%02X",
+							msg->Data[0], msg->Data[1], msg->Data[2]);
 					}
 				}
 
@@ -1197,7 +1207,7 @@ static unsigned __stdcall RxThreadProc(void *pArg)
 					continue;
 				}
 
-				// 3. Match URID
+				// 3. Match URID table (always try, even during primitive)
 				T_PDU_UINT32 matchedURID = PDU_ID_UNDEF;
 				if (msg->DataSize >= 3 && c->ActiveURID.NumEntries > 0) {
 					UNUM32 i;
@@ -1211,14 +1221,15 @@ static unsigned __stdcall RxThreadProc(void *pArg)
 							msg->Data[1] == e->ExpectedTargetAddr &&
 							msg->Data[2] == e->ExpectedSrcAddr) {
 							matchedURID = e->UniqueRespIdentifier;
+							accepted = 1; /* URID match also accepts */
 							logmsg("RxThread: URID match [%u] id=0x%08X", i, matchedURID);
 							break;
 						}
 					}
 				}
 
-				// 4. Final Drop Logic: If no primitive AND no URID match, drop it
-				if (c->ExpectedResponseId == 0 && matchedURID == PDU_ID_UNDEF) {
+				// 4. Final drop: not an active primitive AND no URID match
+				if (!accepted) {
 					continue;
 				}
 
@@ -1268,9 +1279,11 @@ static unsigned __stdcall RxThreadProc(void *pArg)
 					logmsg("RxThread: pushed RESULT ev=%p hCoPrim=%lu URID=0x%08X", 
 						ev, ev->hCoPrimitive, matchedURID);
 					// Handle Primitive Completion
-					if (c->PrimitiveActive && c->ExpectedResponseId != 0) {
+					if (c->PrimitiveActive) {
 						c->ResultCount++;
-						if (c->ResultCount >= c->ExpectedResults) {
+						logmsg("RxThread: result %d/%d for hCoPrim=%lu",
+							c->ResultCount, c->ExpectedResults, c->LastCoPrimHandle);
+						if (c->ExpectedResults > 0 && c->ResultCount >= c->ExpectedResults) {
 							logmsg("RxThread: primitive FINISHED after %d results", c->ResultCount);
 							T_PDU_UINT32 finishedHandle = c->LastCoPrimHandle;
 							PDU_EVENT_ITEM *evFin = (PDU_EVENT_ITEM *)calloc(1, sizeof(PDU_EVENT_ITEM));
@@ -1283,7 +1296,6 @@ static unsigned __stdcall RxThreadProc(void *pArg)
 								evq_push(&c->EvtQ, evFin);
 							}
 							c->PrimitiveActive = 0;
-							c->ExpectedResponseId = 0;
 						}
 					}
 					if (g.EventCallback) {
@@ -1459,7 +1471,6 @@ static int AllocConn(T_PDU_UINT32 *phConn)
 
 			/* ADD THESE FOUR LINES: */
 			g.Connections[i].PrimitiveActive = 0;
-			g.Connections[i].ExpectedResponseId = 0;
 			g.Connections[i].ResultCount = 0;
 			g.Connections[i].ExpectedResults = 1;
 
@@ -2816,7 +2827,6 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUStartComPrimitive(
 		}
 
 		c->PrimitiveActive = 0;
-		c->ExpectedResponseId = 0;
 
 		return PDU_STATUS_NOERROR;
 	}
@@ -2832,19 +2842,17 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUStartComPrimitive(
 	msg.DataSize = CoPrimitiveDataSize;
 	memcpy(msg.Data, pCoPrimitiveData, CoPrimitiveDataSize);
 
-	c->PrimitiveActive = 0;
-	c->ExpectedResponseId = 0;
+	/* Mark primitive active. Per spec J.1.3.2.2, response header bytes
+	 * differ from request headers on J1850 VPW (e.g. request 0x68 ->
+	 * response 0x48). Do NOT gate RX on a specific header byte.
+	 * The URID table and software filters handle response matching. */
+	c->PrimitiveActive = 1;
+	c->ResultCount = 0;
+	c->LastCoPrimHandle = hCoPrim;
+	c->LastCoPrimTime = GetTickCount();
 
-	if (msg.DataSize >= 2) {
-		uint8_t target = msg.Data[1];
-		c->PrimitiveActive = 1;
-		c->ExpectedResponseId = msg.Data[0];
-		c->LastCoPrimHandle = hCoPrim;
-		c->LastCoPrimTime = GetTickCount();
-
-		logmsg("PDUStartComPrimitive: Expecting response header 0x%02X hCoPrim=%lu",
-			c->ExpectedResponseId, hCoPrim);
-	}
+	logmsg("PDUStartComPrimitive: primitive ACTIVE hCoPrim=%lu expectedResults=%d dataSize=%u",
+		hCoPrim, c->ExpectedResults, msg.DataSize);
 
 	unsigned long numMsgs = 1;
 	logmsg("PDUStartComPrimitive: calling pfWriteMsgs chan=%u size=%u",
@@ -2859,7 +2867,6 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUStartComPrimitive(
 
 	if (ret != J2534_STATUS_NOERROR) {
 		c->PrimitiveActive = 0;
-		c->ExpectedResponseId = 0;
 		return PDU_ERR_FCT_FAILED;
 	}
 
@@ -2873,8 +2880,8 @@ PDU_API T_PDU_UINT32 PDU_CALL PDUStartComPrimitive(
 		evq_push(&c->EvtQ, evComm);
 	}
 
-	logmsg("PDUStartComPrimitive: EXIT OK hCoPrim=%lu active=%d expected=0x%02X",
-		hCoPrim, c->PrimitiveActive, c->ExpectedResponseId);
+	logmsg("PDUStartComPrimitive: EXIT OK hCoPrim=%lu active=%d expectedResults=%d",
+		hCoPrim, c->PrimitiveActive, c->ExpectedResults);
 
 	return PDU_STATUS_NOERROR;
 }
@@ -3707,8 +3714,8 @@ PDU_API T_PDU_ERROR PDU_CALL PDUGetUniqueRespIdTable(
 		(PDU_ECU_UNIQUE_RESP_DATA*)calloc(1, sizeof(*entry));
 	if (!entry) { free(tbl); return PDU_ERR_FCT_FAILED; }
 
-	/* Allocate 3 params for the template: SourceAddr, Format, TargetAddr */
-	PDU_PARAM_ITEM *params = (PDU_PARAM_ITEM*)calloc(3, sizeof(PDU_PARAM_ITEM));
+	/* Allocate 6 params for the template: full J1850 VPW addressing set */
+	PDU_PARAM_ITEM *params = (PDU_PARAM_ITEM*)calloc(6, sizeof(PDU_PARAM_ITEM));
 	if (!params) { free(entry); free(tbl); return PDU_ERR_FCT_FAILED; }
 
 	tbl->ItemType = PDU_IT_UNIQUE_RESP_ID_TABLE;
@@ -3716,29 +3723,58 @@ PDU_API T_PDU_ERROR PDU_CALL PDUGetUniqueRespIdTable(
 	tbl->pUniqueData = entry;
 
 	entry->UniqueRespIdentifier = PDU_ID_UNDEF;
-	entry->NumParamItems = 3;
+	entry->NumParamItems = 6;
 	entry->pParams = params;
 
-	// Param 0: CP_EcuRespSourceAddress
+	/* Defaults from MDI2.mdi for SAE_J1850_VPW protocol */
+
+	// Param 0: CP_EcuRespSourceAddress = 0x10 (default ECU source)
 	params[0].ItemType = PDU_IT_PARAM;
 	params[0].ComParamId = CP_EcuRespSourceAddress;
 	params[0].ComParamDataType = PDU_PT_UNUM32;
-	params[0].ComParamClass = PDU_PC_PROTOCOL;
+	params[0].ComParamClass = PDU_PC_UNIQUE_ID;
 	params[0].pComParamData = calloc(1, 4);
+	if (params[0].pComParamData) *(UNUM32*)params[0].pComParamData = 0x10;
 
-	// Param 1: CP_FuncRespFormatPriorityType
+	// Param 1: CP_FuncRespFormatPriorityType = 0x48 (functional response header)
 	params[1].ItemType = PDU_IT_PARAM;
 	params[1].ComParamId = CP_FuncRespFormatPriorityType;
 	params[1].ComParamDataType = PDU_PT_UNUM32;
-	params[1].ComParamClass = PDU_PC_PROTOCOL;
+	params[1].ComParamClass = PDU_PC_UNIQUE_ID;
 	params[1].pComParamData = calloc(1, 4);
+	if (params[1].pComParamData) *(UNUM32*)params[1].pComParamData = 0x48;
 
-	// Param 2: CP_FuncRespTargetAddr
+	// Param 2: CP_FuncRespTargetAddr = 0x6B (functional response target)
 	params[2].ItemType = PDU_IT_PARAM;
 	params[2].ComParamId = CP_FuncRespTargetAddr;
 	params[2].ComParamDataType = PDU_PT_UNUM32;
-	params[2].ComParamClass = PDU_PC_PROTOCOL;
+	params[2].ComParamClass = PDU_PC_UNIQUE_ID;
 	params[2].pComParamData = calloc(1, 4);
+	if (params[2].pComParamData) *(UNUM32*)params[2].pComParamData = 0x6B;
+
+	// Param 3: CP_TesterSourceAddress = 0xF1
+	params[3].ItemType = PDU_IT_PARAM;
+	params[3].ComParamId = CP_TesterSourceAddress;
+	params[3].ComParamDataType = PDU_PT_UNUM32;
+	params[3].ComParamClass = PDU_PC_UNIQUE_ID;
+	params[3].pComParamData = calloc(1, 4);
+	if (params[3].pComParamData) *(UNUM32*)params[3].pComParamData = 0xF1;
+
+	// Param 4: CP_PhysRespFormatPriorityType = 0x48
+	params[4].ItemType = PDU_IT_PARAM;
+	params[4].ComParamId = CP_PhysRespFormatPriorityType;
+	params[4].ComParamDataType = PDU_PT_UNUM32;
+	params[4].ComParamClass = PDU_PC_UNIQUE_ID;
+	params[4].pComParamData = calloc(1, 4);
+	if (params[4].pComParamData) *(UNUM32*)params[4].pComParamData = 0x48;
+
+	// Param 5: CP_PhysReqTargetAddr = 0x10
+	params[5].ItemType = PDU_IT_PARAM;
+	params[5].ComParamId = CP_PhysReqTargetAddr;
+	params[5].ComParamDataType = PDU_PT_UNUM32;
+	params[5].ComParamClass = PDU_PC_UNIQUE_ID;
+	params[5].pComParamData = calloc(1, 4);
+	if (params[5].pComParamData) *(UNUM32*)params[5].pComParamData = 0x10;
 
 	*pUniqueRespIdTable = tbl;
 
